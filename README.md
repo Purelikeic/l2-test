@@ -1,5 +1,9 @@
 # TL-Test-New
 
+An additional standalone [Compact CHI frontend](main/CompactCHI/README.md)
+provides `make compactchi-build` / `make compactchi-test` for AnserL2. Existing
+TileLink targets and agents keep their original protocol and build contracts.
+
 [![scenario-CoupledL2](https://github.com/OpenXiangShan/tl-test-new/actions/workflows/scenario-CoupledL2.yml/badge.svg?branch=master)](https://github.com/OpenXiangShan/tl-test-new/actions/workflows/scenario-CoupledL2.yml)
 [![scenario-OpenLLC](https://github.com/OpenXiangShan/tl-test-new/actions/workflows/scenario-OpenLLC.yml/badge.svg?branch=master)](https://github.com/OpenXiangShan/tl-test-new/actions/workflows/scenario-OpenLLC.yml)
 

@@ -279,3 +279,20 @@ run-with-portgen: FORCE tltest-config-postbuild tltest-portgen
 clean: coupledL2-verilate-clean coupledL2-verilog-clean openLLC-verilate-clean openLLC-verilog-clean
 	rm -rf ./main/build
 	mkdir ./main/build
+
+# Compact CHI frontend for standalone AnserL2. Generated artifacts remain
+# outside main/ and the existing TileLink targets keep their original behavior.
+DUT_SV ?= $(abspath ../build/L2Cache.sv)
+COMPACTCHI_OBJ_DIR ?= $(CURDIR)/build/compactchi
+COMPACTCHI_SEEDS ?= 42 7 12345 17 9999
+
+.PHONY: compactchi-build compactchi-test
+compactchi-build:
+	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
+		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal \
+		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp
+
+compactchi-test: compactchi-build
+	@for seed in $(COMPACTCHI_SEEDS); do \
+		$(COMPACTCHI_OBJ_DIR)/VL2Cache $$seed || exit $$?; \
+	done
