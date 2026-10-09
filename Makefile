@@ -312,6 +312,14 @@ compactchi-config-test:
 		-o $(COMPACTCHI_CHECK_DIR)/config-test
 	$(COMPACTCHI_CHECK_DIR)/config-test $(COMPACTCHI_CHECK_DIR)
 
+.PHONY: compactchi-board-test
+compactchi-board-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/ArchitecturalBoardTest.cpp \
+		$(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp $(CURDIR)/main/Base/TLGlobal.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/board-test
+	$(COMPACTCHI_CHECK_DIR)/board-test
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
