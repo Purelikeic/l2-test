@@ -3,6 +3,8 @@
 #include "../Events/TLSystemEvent.hpp"
 #include "../Memory/CHIHomeMemory.hpp"
 #include "ArchitecturalBoard.hpp"
+#include "Requester.hpp"
+#include "CanonicalTrace.hpp"
 #include <cstdio>
 #include <stdexcept>
 
@@ -66,6 +68,10 @@ class HomeAdapter : public TestProtocolAdapter, public TLLocalContext {
     uint64_t* cycleValue = nullptr;
     std::unique_ptr<chi_agent::HomeMemory> home;
     std::unique_ptr<compactchi::ArchitecturalBoard> board;
+    std::unique_ptr<compactchi::Requester> requester;
+    std::unique_ptr<compactchi::CanonicalTrace> trace;
+    std::filesystem::path tracePrefix;
+    unsigned returnBeat = 0;
     compactchi::LineData expected{};
     class ReadFuzzer : public Fuzzer {
         HomeAdapter& owner;
@@ -74,8 +80,7 @@ class HomeAdapter : public TestProtocolAdapter, public TLLocalContext {
         explicit ReadFuzzer(HomeAdapter& owner) : owner(owner) {}
         void tick() override {
             if (!issued && *cycles >= 10) {
-                owner.board->issue({0, 15}, compactchi::ReadClass::Once, 0x1000, true);
-                owner.home->submit({3, 0x1000, false});
+                owner.requester->enqueue({0, 1, 15, 3, 0x1000, true});
                 issued = true;
             }
         }
@@ -83,6 +88,7 @@ class HomeAdapter : public TestProtocolAdapter, public TLLocalContext {
     ReadFuzzer fuzzer{*this};
     bool done = false;
 public:
+    explicit HomeAdapter(const std::filesystem::path& tracePrefix) : tracePrefix(tracePrefix) {}
     bool finalized = false;
     uint64_t cycle() const noexcept override { return *cycleValue; }
     int sys() const noexcept override { return 0; }
@@ -98,6 +104,8 @@ public:
         fuzzer.set_cycles(&cycles);
         home = std::make_unique<chi_agent::HomeMemory>(config, cycles, memory, port);
         board = std::make_unique<compactchi::ArchitecturalBoard>(*this, config.GetAgentCount(), global, uncached);
+        requester = std::make_unique<compactchi::Requester>(*board, 1);
+        trace = std::make_unique<compactchi::CanonicalTrace>(tracePrefix, config.seed);
         for (unsigned i = 0; i < 64; ++i) {
             expected[i] = uint8_t(i ^ 17);
             memory.access(0x1000 + i) = expected[i];
@@ -107,19 +115,45 @@ public:
     }
     void handleChannels() override {
         home->handleChannels();
+        // A host-only completer fixture links the requester to real memory.
+        // Its backend ID (3) is explicitly distinct from requester TxnID (15).
+        if (requester->requestValid() && home->ready(false)) {
+            const auto request = requester->request();
+            compactchi::CanonicalEvent event{cycle(), std::nullopt, compactchi::Channel::CchiRxReq,
+                request.node, request.target, request.txn, request.opcode, true, true, request.traceTag};
+            event.address = request.address;
+            trace->record(event);
+            requester->requestAccepted();
+            home->submit({3, request.address, false});
+        }
         if (home->completionValid()) {
             const auto& result = home->completion();
-            board->data({0, 15}, 0, 0, 0, true, result.data.data());
-            board->data({0, 15}, 1, 0, 0, true, result.data.data() + 32);
-            home->popCompletion();
-            done = true;
+            require(result.id == 3 && !result.write, "host completer lost its memory ID association");
+            compactchi::DataFlit response{1, 0, 15, 0, returnBeat, 0, true};
+            std::copy_n(result.data.begin() + returnBeat * 32, 32, response.data.begin());
+            compactchi::CanonicalEvent event{cycle(), std::nullopt, compactchi::Channel::CchiTxDat,
+                response.node, response.target, response.txn, response.opcode, true, true, response.traceTag};
+            event.address = result.address;
+            event.dataId = returnBeat;
+            event.dbid = response.dbid;
+            event.resp = response.resp;
+            event.data = response.data;
+            trace->record(event);
+            requester->receiveData(response);
+            if (++returnBeat == 2) {
+                home->popCompletion();
+                done = true;
+            }
         }
     }
     void fuzz() override { fuzzer.tick(); }
     void updateSignals() override { home->updateSignals(); }
     void finalize() override {
-        require(done && home->idle() && board->idle(), "borrowed Home/board resources did not drain");
+        require(done && home->idle() && board->idle() && requester->idle(),
+                "borrowed Home/requester/board resources did not drain");
         // Destroy borrowers before Sequencer reclaims memory and scoreboards.
+        trace.reset();
+        requester.reset();
         board.reset();
         home.reset();
         finalized = true;
@@ -153,7 +187,7 @@ int main(int argc, char** argv) {
         sequencer.Finalize();
         require(adapter.finalized && sequencer.GetState() == TLSequencer::State::NOT_INITIALIZED,
                 "original Sequencer adapter did not finalize");
-        HomeAdapter homeAdapter;
+        HomeAdapter homeAdapter(std::filesystem::path(argv[1]).parent_path() / "native-host-trace");
         TLSequencer homeSequencer;
         homeSequencer.InitializeProtocol(config, homeAdapter);
         require(homeSequencer.IsAlive(), "borrowed Home/board initialization failed");

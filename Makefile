@@ -327,10 +327,12 @@ compactchi-sequencer-test:
 		$(CURDIR)/main/Sequencer/TLSequencer.cpp $(CURDIR)/main/Sequencer/ProtocolSequencer.cpp \
 		$(CURDIR)/main/System/TLConfig.cpp $(CURDIR)/main/Memory/MemoryAgent.cpp \
 		$(CURDIR)/main/Memory/CHIHomeMemory.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
+		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \
 		$(wildcard $(CURDIR)/main/Base/*.cpp $(CURDIR)/main/Events/*.cpp \
 		$(CURDIR)/main/TLAgent/*.cpp $(CURDIR)/main/Fuzzer/*.cpp) \
 		-o $(COMPACTCHI_CHECK_DIR)/sequencer-test
 	$(COMPACTCHI_CHECK_DIR)/sequencer-test $(COMPACTCHI_CHECK_DIR)/absent-sequencer.ini
+	python3 $(CURDIR)/main/CompactCHI/check-native-host-trace.py $(COMPACTCHI_CHECK_DIR)/native-host-trace.jsonl
 
 .PHONY: compactchi-trace-test
 compactchi-trace-test:
