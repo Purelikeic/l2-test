@@ -117,7 +117,8 @@ void ArchitecturalBoard::store(unsigned node, uint64_t address, const LineData& 
     require(state.owner && *state.owner == node &&
             (state.permission == Permission::UC || state.permission == Permission::UD),
             "store without Unique permission");
-    require(!lineOwners.count(address), "store before transaction terminal completion");
+    require(!lineOwners.count(address) && !snoopOwners.count(address),
+            "store before transaction or Snoop terminal completion");
     auto entry = std::make_shared<Global_SBEntry>();
     entry->status = Global_SBEntry::SB_VALID;
     entry->data = make_shared_tldata<64>();
@@ -129,6 +130,12 @@ void ArchitecturalBoard::issueSnoop(RequestKey key, unsigned opcode, uint64_t ad
     require(key.node < nodeCount && opcode < 4 && !(address & 63) && global.haskey(address),
             "invalid Compact Snoop identity, opcode or line");
     require(!snoops.haskey(key) && !snoopOwners.count(address), "Snoop resource already owned");
+    const auto requestOwner = lineOwners.find(address);
+    if (requestOwner != lineOwners.end() && requestOwner->second.node == key.node) {
+        const auto request = pending.query(&context, requestOwner->second);
+        require(request->request == ReadClass::Once || request->beats == 0,
+                "Snoop targeted a persistent grant awaiting CompAck");
+    }
     const auto& state = nodeLine(address);
     // This adapter models included persistent nodes; a targeted node must be
     // either the sole owner or Invalid. Clean invalid-node replies need no data.
@@ -163,6 +170,13 @@ void ArchitecturalBoard::checkSnoop(const SnoopExpectation& entry, unsigned resp
 void ArchitecturalBoard::finishSnoop(RequestKey key, const SnoopExpectation& entry, unsigned resp) {
     auto& state = nodeLine(entry.address);
     // A probe of an Invalid identity must not erase another identity's owner.
+    const auto requestOwner = lineOwners.find(entry.address);
+    if (requestOwner != lineOwners.end() && requestOwner->second.node == key.node) {
+        auto request = pending.query(&context, requestOwner->second);
+        // Losing or cleaning UD before the first grant means the requester
+        // can no longer discard the completion as an already-dirty copy.
+        request->retainDirtyData = false;
+    }
     if (state.owner && *state.owner == key.node) {
         const unsigned base = resp & 3;
         if (base == 0) state = {};

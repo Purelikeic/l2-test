@@ -340,6 +340,14 @@ compactchi-trace-test:
 	$(COMPACTCHI_CHECK_DIR)/trace-test $(COMPACTCHI_CHECK_DIR)/canonical-test
 	python3 $(CURDIR)/main/CompactCHI/check-canonical-trace.py $(COMPACTCHI_CHECK_DIR)/canonical-test
 
+.PHONY: compactchi-requester-test
+compactchi-requester-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/RequesterTest.cpp \
+		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
+		$(CURDIR)/main/Base/TLGlobal.cpp -o $(COMPACTCHI_CHECK_DIR)/requester-test
+	$(COMPACTCHI_CHECK_DIR)/requester-test
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
