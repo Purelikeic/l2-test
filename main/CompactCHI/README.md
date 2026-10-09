@@ -1,4 +1,47 @@
-# Compact CHI standalone frontend
+# Compact CHI testing
+
+## Verified tester foundations — DUT binding remains unfinished
+
+The final target must use AnserL2 as its only DUT and the original tester
+System/Sequencer/MemoryAgent/boards/fuzzer lifecycle. The legacy frontend below
+is still present; it is not the finished framework/architectural acceptance
+method. Prefetch/replacement development must wait for actual DUT binding and
+complete independent scoreboard obligations.
+
+From the AnserL2 parent, `make tester-foundation` runs seven serialized host
+component checks and records exact RTL, tester and gate digests with unchanged
+source checks in ignored `build/tester-foundation-acceptance.json`:
+
+- Original MemoryAgent portability, real seed use, latency, OOO, masked writes,
+  backpressure and 64-bit cycle handling.
+- CHI HomeMemory line adapter backed by the original memory queues, including
+  reserved completion capacity and borrowed Sequencer resource mode.
+- Shared original System defaults/callback/INI settings via `LoadTestConfig`.
+- Independent ArchitecturalBoard using `ScoreBoard`, `GlobalBoard` and
+  `UncachedBoard`: legal reads, dirty node ownership, complete beats, DBID,
+  CompAck, four Compact reverse-Snoop opcodes and 23 invalid-observation checks.
+- Original `TLSequencer::InitializeProtocol`/Tick/Tock/Finalize lifecycle:
+  protocol adapter hooks, original Fuzzer base and borrowed boards/memory,
+  finish/failure handling, plus the default TileLink idle lifecycle.
+- Canonical JSONL/text sink for all 13 Compact/E.b port directions; cycle,
+  optional simulation time, TraceTag, handshake, ID/address/data/state fields.
+  Unknown fields are null. Independent JSON parsing verifies the host fixture.
+- Read-profile Requester adapter: node/TxnID versus DBID association, CompAck
+  resource lifetime, dirty Snoop data and independent offered queues under stalls.
+
+The shared-cycle host fixture combines requester, HomeMemory, architectural
+board and canonical records. Its real host cycles and data are independently
+parsed from `build/compactchi-foundation/native-host-trace.jsonl`; it does not
+contain a DUT or a waveform. Simulation time is explicitly null there.
+
+The initial board does not model E.b Snoop/DCT, Retry/P-Credit, CMO, writeback,
+MMIO, replacement/internal L2 state or prefetch algorithms. Requester currently
+supports normal full-line read requests, CompAck and Compact reverse Snoops;
+other transaction classes still require adapters. These host tests cannot be
+used as full DUT alignment evidence. No reference RTL is built or run, and no
+new database/DPI dependencies are used by this path.
+
+## Legacy standalone frontend — historical control traffic
 
 This frontend adds a Compact CHI requester and downstream CHI home environment
 for AnserL2. It drives the generated `L2Cache` ports directly. The original
