@@ -5,6 +5,7 @@
 #include <deque>
 #include <map>
 #include <tuple>
+#include <functional>
 
 namespace compactchi {
 struct EbRequest {
@@ -59,6 +60,9 @@ class EbHome {
         bool write, copyback, needAck, rspAccepted = false, memoryPending = false;
         unsigned sentMask = 0, receivedMask = 0;
         bool retryPending = false, retryDelivered = false, homeMemoryOnly = false;
+        bool control = false, device = false;
+        unsigned dataMask = 3;
+        uint64_t byteMask = ~uint64_t(0);
         chi_agent::Line expected{}, received{};
     };
     enum class RspKind { Completion, Retry, Credit };
@@ -78,6 +82,9 @@ class EbHome {
     std::map<std::pair<unsigned, unsigned>, unsigned> credits;
     std::deque<QueuedRsp> responses;
     std::deque<QueuedDat> data;
+    std::map<uint64_t, chi_agent::Line> deviceMemory;
+    std::function<std::pair<chi_agent::Line, uint64_t>(uint64_t)> deviceOracle;
+    std::function<void(uint64_t, const chi_agent::Line&)> committed;
     static bool isRead(unsigned opcode);
     static bool isWrite(unsigned opcode);
     static void require(bool value, const char* message);
@@ -87,6 +94,9 @@ class EbHome {
 public:
     EbHome(chi_agent::HomeMemory& memory, TLLocalContext& local, GlobalBoard<paddr_t>& global,
            unsigned node = 8, size_t capacity = 16);
+    void setDeviceOracle(std::function<std::pair<chi_agent::Line, uint64_t>(uint64_t)> oracle) { deviceOracle = std::move(oracle); }
+    void onMemoryCommit(std::function<void(uint64_t, const chi_agent::Line&)> callback) { committed = std::move(callback); }
+    void receiveDeviceData(const EbData& flit);
     bool requestReady(const EbRequest& request) const;
     void accept(const EbRequest& request, const HomePlan& plan = {});
     // Call after capturing memory handshakes, before memory next-cycle outputs.

@@ -32,6 +32,7 @@ TLSequencer::TLSequencer() noexcept
     , memories          (nullptr)
     , io                (nullptr)
     , mmio              (nullptr)
+    , l2ToL1Hint        (nullptr)
     , memoryAXI         (nullptr)
     , cycles            (0)
 { }
@@ -48,6 +49,7 @@ TLSequencer::~TLSequencer() noexcept
     delete[] memories;
     delete[] io;
     delete[] mmio;
+    delete[] l2ToL1Hint;
     delete[] memoryAXI;
 }
 
@@ -216,9 +218,9 @@ void TLSequencer::Initialize(const TLLocalConfig& cfg) noexcept
         ulAgents    = new ULAgent*      [GetULAgentCount()];
 
         //
-        mmio        = new MMIOPort*     [total_c_agents];
-        mmioAgents  = new MMIOAgent*    [total_c_agents];
-        mmioFuzzers = new MMIOFuzzer*   [total_c_agents];
+        mmio        = new MMIOPort*     [config.coreCount];
+        mmioAgents  = new MMIOAgent*    [config.coreCount];
+        mmioFuzzers = new MMIOFuzzer*   [config.coreCount];
 
         //
         l2ToL1Hint  = new L2ToL1HintPort*[total_c_agents];
@@ -352,7 +354,7 @@ void TLSequencer::Initialize(const TLLocalConfig& cfg) noexcept
             io[i]->d.data = make_shared_tldata<BEATSIZE>();
         }
 
-        for (size_t i = 0; i < total_c_agents; i++)
+        for (size_t i = 0; i < config.coreCount; i++)
         {
             mmio[i]->a.data = make_shared_tldata<DATASIZE_MMIO>();
             mmio[i]->c.data = make_shared_tldata<DATASIZE_MMIO>();
@@ -384,7 +386,7 @@ void TLSequencer::Initialize(const TLLocalConfig& cfg) noexcept
             io[i]->e.valid = 0;
         }
 
-        for (size_t i = 0; i < total_c_agents; i++)
+        for (size_t i = 0; i < config.coreCount; i++)
         {
             mmio[i]->a.ready = 0;
             mmio[i]->a.valid = 0;
@@ -474,31 +476,15 @@ void TLSequencer::Finalize() noexcept
             }
         }
 
+        for (size_t i = 0; i < config.coreCount; i++)
+        {
+            delete mmioFuzzers[i]; mmioFuzzers[i] = nullptr;
+            delete mmioAgents[i]; mmioAgents[i] = nullptr;
+            delete mmio[i]; mmio[i] = nullptr;
+        }
         for (size_t i = 0; i < GetCAgentCount(); i++)
         {
-            if (mmioFuzzers[i])
-            {
-                delete mmioFuzzers[i];
-                mmioFuzzers[i] = nullptr;
-            }
-
-            if (mmioAgents[i])
-            {
-                delete mmioAgents[i];
-                mmioAgents[i] = nullptr;
-            }
-
-            if (mmio[i])
-            {
-                delete mmio[i];
-                mmio[i] = nullptr;
-            }
-
-            if (l2ToL1Hint[i])
-            {
-                delete l2ToL1Hint[i];
-                l2ToL1Hint[i] = nullptr;
-            }
+            delete l2ToL1Hint[i]; l2ToL1Hint[i] = nullptr;
         }
 
         for (size_t i = 0; i < config.memoryPortCount; i++)
@@ -575,7 +561,7 @@ void TLSequencer::Tock() noexcept
         for (size_t i = 0; i < total_n_agents; i++)
             agents[i]->handle_channel();
 
-        for (size_t i = 0; i < total_c_agents; i++)
+        for (size_t i = 0; i < config.coreCount; i++)
             mmioAgents[i]->handle_channel();
 
         if (!config.unifiedSequenceEnable)
@@ -583,7 +569,7 @@ void TLSequencer::Tock() noexcept
             for (size_t i = 0; i < total_n_agents; i++)
                 fuzzers[i]->tick();
 
-            for (size_t i = 0; i < total_c_agents; i++)
+            for (size_t i = 0; i < config.coreCount; i++)
                 mmioFuzzers[i]->tick();
         }
         else
@@ -595,7 +581,7 @@ void TLSequencer::Tock() noexcept
         for (size_t i = 0; i < total_n_agents; i++)
             agents[i]->update_signal();
 
-        for (size_t i = 0; i < total_c_agents; i++)
+        for (size_t i = 0; i < config.coreCount; i++)
             mmioAgents[i]->update_signal();
 
         //

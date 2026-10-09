@@ -346,7 +346,7 @@ compactchi-trace-test:
 compactchi-requester-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)
 	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/RequesterTest.cpp \
-		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
+		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/RequesterActions.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
 		$(CURDIR)/main/Base/TLGlobal.cpp -o $(COMPACTCHI_CHECK_DIR)/requester-test
 	$(COMPACTCHI_CHECK_DIR)/requester-test
 
@@ -374,14 +374,35 @@ compactchi-victim-test:
 		-o $(COMPACTCHI_CHECK_DIR)/victim-profile-test
 	$(COMPACTCHI_CHECK_DIR)/victim-profile-test
 
+.PHONY: compactchi-node-test
+compactchi-node-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/NodeAgentTest.cpp \
+		$(CURDIR)/main/Sequencer/TLSequencer.cpp $(CURDIR)/main/Sequencer/ProtocolSequencer.cpp \
+		$(CURDIR)/main/System/TLConfig.cpp $(CURDIR)/main/Memory/MemoryAgent.cpp \
+		$(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp $(CURDIR)/main/CompactCHI/Requester.cpp \
+		$(CURDIR)/main/CompactCHI/RequesterActions.cpp \
+		$(wildcard $(CURDIR)/main/Base/*.cpp $(CURDIR)/main/Events/*.cpp \
+		$(CURDIR)/main/TLAgent/*.cpp $(CURDIR)/main/Fuzzer/*.cpp) \
+		-o $(COMPACTCHI_CHECK_DIR)/node-agent-test
+	$(COMPACTCHI_CHECK_DIR)/node-agent-test $(COMPACTCHI_CHECK_DIR)
+
+.PHONY: compactchi-node-fuzzer-test
+compactchi-node-fuzzer-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/NodeFuzzerTest.cpp \
+		$(CURDIR)/main/Fuzzer/NodeFuzzer.cpp $(CURDIR)/main/System/TLConfig.cpp \
+		$(CURDIR)/main/Base/TLGlobal.cpp -o $(COMPACTCHI_CHECK_DIR)/node-fuzzer-test
+	$(COMPACTCHI_CHECK_DIR)/node-fuzzer-test $(COMPACTCHI_CHECK_DIR)
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	@mkdir -p $(COMPACTCHI_OBJ_DIR)
 	$(VERILATOR) --cc --exe --build --assert --trace -j $(THREADS_BUILD) --top-module L2Cache \
 		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal -CFLAGS "-std=c++20" \
 		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp \
-		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
-		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \
+		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/RequesterActions.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
+		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/CompactCHI/EbHomeDevice.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \
 		$(CURDIR)/main/CompactCHI/LowerSnoopBoard.cpp \
 		$(CURDIR)/main/Memory/CHIHomeMemory.cpp $(CURDIR)/main/Memory/MemoryAgent.cpp \
 		$(CURDIR)/main/Sequencer/TLSequencer.cpp $(CURDIR)/main/Sequencer/ProtocolSequencer.cpp \

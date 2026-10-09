@@ -2,6 +2,7 @@
 
 #include "../Utils/ScoreBoard.h"
 #include "../Utils/ULScoreBoard.h"
+#include "../Sequencer/TestNode.hpp"
 #include <array>
 #include <map>
 #include <optional>
@@ -60,6 +61,15 @@ class ArchitecturalBoard {
     std::map<uint64_t, RequestKey> lineOwners;
     ScoreBoard<uint64_t, SnoopExpectation> snoops;
     std::map<uint64_t, RequestKey> snoopOwners;
+    struct Control {
+        TestAction action;
+        unsigned sent = 0, received = 0;
+        bool completion = false;
+        std::optional<unsigned> dbid;
+        LineData expected{};
+    };
+    std::map<RequestKey, Control> controls;
+    std::map<uint64_t, LineData> deviceExpected, memoryExpected;
     void checkSnoop(const SnoopExpectation& entry, unsigned resp, bool traceTag, bool withData);
     void finishSnoop(RequestKey key, const SnoopExpectation& entry, unsigned resp);
     NodeLine& nodeLine(uint64_t address);
@@ -78,6 +88,17 @@ public:
     void snoopResponse(RequestKey key, unsigned resp, bool traceTag);
     void snoopData(RequestKey key, unsigned dataId, unsigned resp, bool traceTag, const uint8_t* bytes);
     const NodeLine& state(uint64_t address) { return nodeLine(address); }
+    bool canIssue(unsigned node, uint64_t address, bool persistent);
+    bool lineBusy(uint64_t address);
+    void issueControl(RequestKey key, const TestAction& action);
+    void controlDBID(RequestKey key, unsigned dbid, bool traceTag);
+    void controlSent(RequestKey key, unsigned beat);
+    bool controlData(RequestKey key, unsigned beat, unsigned resp, bool traceTag, const uint8_t* bytes);
+    void controlComplete(RequestKey key, unsigned opcode, unsigned resp, bool traceTag);
+    void controlAck(RequestKey key);
+    std::pair<LineData, uint64_t> deviceWriteExpectation(uint64_t address);
+    void memoryCommitted(uint64_t address, const LineData& expected) { memoryExpected[address] = expected; }
+    const LineData& expectedDevice(uint64_t address);
     bool idle();
 };
 } // namespace compactchi

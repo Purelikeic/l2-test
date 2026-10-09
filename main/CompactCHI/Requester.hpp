@@ -9,6 +9,7 @@ struct RequestFlit {
     unsigned node, target, txn, opcode;
     uint64_t address;
     bool traceTag;
+    unsigned size = 6;
 };
 struct DataFlit {
     unsigned node, target, txn, dbid, dataId, resp;
@@ -34,10 +35,11 @@ struct SnoopFlit {
 class Requester {
     struct RequestProgress { RequestFlit flit; unsigned mask = 0; LineData received{}; };
     struct OutResponse { ResponseFlit flit; bool snoop; };
-    struct OutData { DataFlit flit; unsigned snoopOpcode; uint64_t address; };
+    struct OutData { DataFlit flit; unsigned snoopOpcode; uint64_t address; bool control = false; RequestKey owner{}; };
     struct NodeCopy { Permission permission; LineData data; };
     ArchitecturalBoard& board;
     unsigned l2Node;
+    std::vector<TestNodeKind> nodeKinds;
     size_t capacity;
     std::deque<RequestFlit> requests;
     std::deque<OutResponse> responses;
@@ -45,12 +47,29 @@ class Requester {
     std::map<RequestKey, RequestProgress> progress;
     std::map<std::pair<unsigned, uint64_t>, NodeCopy> copies;
     std::map<RequestKey, uint64_t> snoopAddresses;
+    struct ControlProgress { RequestFlit flit; TestAction action; bool accepted = false, dbidReceived = false, combined = false; };
+    std::map<RequestKey, ControlProgress> controls;
+    std::deque<RequestFlit> events;
     std::map<std::pair<unsigned, unsigned>, unsigned> ackTransactions;
     static ReadClass readClass(unsigned opcode);
     static void require(bool value, const char* message);
 public:
     Requester(ArchitecturalBoard& board, unsigned l2Node, size_t capacity = 16);
+    void configureNodes(const std::vector<TestNodeDescriptor>& nodes) {
+        nodeKinds.clear();
+        for (const auto& node : nodes) {
+            if (node.id != nodeKinds.size()) throw std::invalid_argument("noncanonical node layout");
+            nodeKinds.push_back(node.kind);
+        }
+    }
     bool requestReady() const;
+    bool ready(unsigned node, const TestAction& action);
+    void enqueueAction(unsigned node, const TestAction& action);
+    bool eventValid() const { return !events.empty(); }
+    const RequestFlit& event() const { return events.front(); }
+    void eventAccepted();
+    void receiveResponse(const ResponseFlit& response, unsigned dbid, unsigned respErr);
+    bool nodeIdle(unsigned node) const;
     void enqueue(const RequestFlit& request);
     bool requestValid() const { return !requests.empty(); }
     const RequestFlit& request() const { return requests.front(); }

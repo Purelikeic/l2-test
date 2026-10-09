@@ -16,7 +16,7 @@ Requester::Requester(ArchitecturalBoard& board, unsigned l2Node, size_t capacity
     : board(board), l2Node(l2Node), capacity(capacity) {
     require(capacity != 0, "requester needs bounded queue capacity");
 }
-bool Requester::requestReady() const { return requests.size() + progress.size() < capacity; }
+bool Requester::requestReady() const { return requests.size() + events.size() + progress.size() + controls.size() < capacity; }
 void Requester::enqueue(const RequestFlit& request) {
     require(requestReady(), "requester queue capacity exceeded");
     require(request.target == l2Node && !(request.address & 63) && request.txn < 256,
@@ -32,6 +32,13 @@ void Requester::requestAccepted() {
     require(requestValid(), "requester accepted an absent REQ");
     const auto flit = request();
     const RequestKey key{flit.node, flit.txn};
+    if (controls.count(key)) {
+        auto& control = controls.at(key);
+        board.issueControl(key, control.action);
+        control.accepted = true;
+        requests.pop_front();
+        return;
+    }
     board.issue(key, readClass(flit.opcode), flit.address, flit.traceTag);
     progress.emplace(key, RequestProgress{flit});
     requests.pop_front();
@@ -40,6 +47,11 @@ void Requester::receiveData(const DataFlit& response) {
     require(response.node == l2Node && response.opcode == 0 && response.respErr == 0,
             "misrouted, non-CompData or erroneous upstream data in the normal read profile");
     const RequestKey key{response.target, response.txn};
+    if (controls.count(key)) {
+        require(controls.at(key).accepted, "noncoherent data preceded request handshake");
+        if (board.controlData(key, response.dataId, response.resp, response.traceTag, response.data.data())) controls.erase(key);
+        return;
+    }
     auto it = progress.find(key);
     require(it != progress.end(), "requester received data for an unknown node/TxnID");
     auto& pending = it->second;
@@ -78,21 +90,33 @@ void Requester::responseAccepted() {
     } else {
         const auto owner = ackTransactions.find({outgoing.flit.node, outgoing.flit.txn});
         require(owner != ackTransactions.end(), "CompAck lost its DBID mapping");
-        auto it = progress.find({outgoing.flit.node, owner->second});
-        require(it != progress.end() && it->second.mask == 3, "CompAck lost its requester transaction owner");
-        board.compAck(outgoing.flit.node, outgoing.flit.txn, outgoing.flit.traceTag);
-        progress.erase(it);
+        if (controls.count({outgoing.flit.node, owner->second})) {
+            const RequestKey key{outgoing.flit.node, owner->second};
+            const auto& c = controls.at(key);
+            board.controlAck(key);
+            copies[{key.node, c.action.address}] = {Permission::UD, c.action.data};
+            controls.erase(key);
+        } else {
+            auto it = progress.find({outgoing.flit.node, owner->second});
+            require(it != progress.end() && it->second.mask == 3, "CompAck lost its requester transaction owner");
+            board.compAck(outgoing.flit.node, outgoing.flit.txn, outgoing.flit.traceTag);
+            progress.erase(it);
+        }
         ackTransactions.erase(owner);
     }
     responses.pop_front();
 }
 bool Requester::snoopReady() const {
+    for (const auto& [key, c] : controls)
+        if (c.accepted && c.action.kind == TestActionKind::WriteBack && !c.dbidReceived) return false;
     return snoopAddresses.size() < capacity;
 }
 void Requester::receiveSnoop(const SnoopFlit& snoop) {
     require(snoopReady(), "requester Snoop capacity exceeded");
     require(snoop.node == l2Node && snoop.opcode < 4 && !(snoop.address & 63),
             "invalid Compact Snoop route, opcode or address");
+    require(nodeKinds.empty() || (snoop.target < nodeKinds.size() && nodeKinds[snoop.target] == TestNodeKind::Coherent),
+            "DUT Snoop targeted a transient/MMIO node");
     const RequestKey key{snoop.target, snoop.txn};
     board.issueSnoop(key, snoop.opcode, snoop.address, snoop.traceTag);
     snoopAddresses.emplace(key, snoop.address);
@@ -102,6 +126,9 @@ void Requester::receiveSnoop(const SnoopFlit& snoop) {
     unsigned resp = 0;
     if (present && snoop.opcode >= 2)
         resp = snoop.opcode == 2 || it->second.permission == Permission::SC ? 1 : 2;
+    for (const auto& [owner, c] : controls)
+        if (owner.node == snoop.target && c.action.address == snoop.address && c.action.kind == TestActionKind::WriteBack)
+            resp = 0; // An outstanding invalidating release cannot retain a new copy.
     if (dirty && snoop.opcode != 0) {
         resp |= 4;
         for (unsigned beat = 0; beat < 2; ++beat) {
@@ -117,6 +144,16 @@ void Requester::dataAccepted() {
     const auto outgoing = dataResponses.front();
     const auto& flit = outgoing.flit;
     const RequestKey key{flit.node, flit.txn};
+    if (outgoing.control) {
+        board.controlSent(outgoing.owner, flit.dataId);
+        if (flit.dataId == 1 && controls.at(outgoing.owner).action.kind == TestActionKind::WriteBack &&
+            std::none_of(snoopAddresses.begin(), snoopAddresses.end(), [&](const auto& entry) {
+                return entry.first.node == flit.node && entry.second == outgoing.address;
+            })) copies.erase({flit.node, outgoing.address});
+        if (flit.dataId == 1 && controls.at(outgoing.owner).combined) controls.erase(outgoing.owner);
+        dataResponses.pop_front();
+        return;
+    }
     board.snoopData(key, flit.dataId, flit.resp, flit.traceTag, flit.data.data());
     if (flit.dataId == 1) {
         auto copy = copies.find({flit.node, outgoing.address});
@@ -135,7 +172,7 @@ void Requester::store(unsigned node, uint64_t address, const LineData& data) {
     it->second.permission = Permission::UD;
 }
 bool Requester::idle() const {
-    return requests.empty() && progress.empty() && responses.empty() && dataResponses.empty() &&
+    return controls.empty() && events.empty() && requests.empty() && progress.empty() && responses.empty() && dataResponses.empty() &&
            snoopAddresses.empty() && ackTransactions.empty();
 }
 } // namespace compactchi

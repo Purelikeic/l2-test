@@ -4,6 +4,7 @@
 MMIOFuzzer::MMIOFuzzer(tl_agent::MMIOAgent* mmioAgent) noexcept
 {
     this->mmioAgent = mmioAgent;
+    this->startupInterval = 0;
 
     this->mmioStart     = mmioAgent->config().mmioStart;
     this->mmioEnd       = mmioAgent->config().mmioEnd;

@@ -5,6 +5,8 @@
 #include "../Utils/ScoreBoard.h"
 #include "../Utils/ULScoreBoard.h"
 
+#include "../Fuzzer/NodeFuzzer.hpp"
+
 // Add a protocol boundary to the original Sequencer, rather than another
 // simulator loop. Adapter lifetime is owned by the caller through Finalize.
 class TestProtocolAdapter {
@@ -14,6 +16,9 @@ public:
                             GlobalBoard<paddr_t>& global, UncachedBoard<paddr_t>& uncached,
                             axi_agent::MemoryAgent& memory,
                             axi_agent::Bundle<BEATSIZE_MEMORY>& memoryPort) = 0;
+    virtual bool hasActionNodes() const { return false; }
+    virtual std::unique_ptr<TestNode> createNode(TestNodeDescriptor) { return {}; }
+    virtual std::unique_ptr<NodeFuzzer> createFuzzer(const TLLocalConfig&, const std::vector<TestNode*>&) { return {}; }
     virtual void handleChannels() = 0;
     virtual void fuzz() = 0;
     virtual void updateSignals() = 0;

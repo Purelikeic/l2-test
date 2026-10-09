@@ -5,14 +5,17 @@ from pathlib import Path
 import sys
 
 
-def check(events, seed):
+def check(events, seed, topo=None):
     fired = [row for row in events if row["handshake"]]
-    addresses = [0x1000 + i * 0x8000 for i in range(8)]
+    base = topo["memoryStart"] if topo else 0x1000
+    coherent = next(n["id"] for n in topo["nodes"] if n["kind"] == 0 and n["mode"] != 0) if topo else 1
+    transient = next(n["id"] for n in topo["nodes"] if n["kind"] == 1 and n["mode"] != 0) if topo else 0
+    addresses = [base + i * 0x8000 for i in range(8)]
     requests = [row for row in fired if row["direction"] == "cchi_rx_req"]
-    expected_requests = [(1 if i == 0 else 0, 20 + i, 16 if i == 0 else 3,
+    expected_requests = [(coherent if i == 0 else transient, 20 + i, 16 if i == 0 else 3,
                           addresses[i] if i < 8 else addresses[0 if i == 8 else 5]) for i in range(10)]
     assert [(r["node"], r["txn_id"], r["opcode"], r["address"]) for r in requests] == expected_requests
-    lower = [r for r in fired if r["direction"] == "chi_tx_req" and (r["address"] & 0x7fff) == 0x1000]
+    lower = [r for r in fired if r["direction"] == "chi_tx_req" and (r["address"] & 0x7fff) == (base & 0x7fff)]
     reads = [r for r in lower if r["opcode"] in (7, 0x26)]
     assert [(r["opcode"], r["address"]) for r in reads] == [(7, addresses[0])] + [
         (0x26, a) for a in addresses[1:] + [addresses[0]]]
@@ -62,7 +65,7 @@ def check(events, seed):
     returned = [r for r in fired if r["direction"] == "cchi_rx_dat"]
     assert len(returned) == 2 and {r["data_id"] for r in returned} == {0, 1}
     for row in returned:
-        assert row["opcode"] == 3 and row["resp"] == 4 and row["node"] == 1
+        assert row["opcode"] == 3 and row["resp"] == 4 and row["node"] == coherent
         assert row["txn_id"] == snoops[0]["txn_id"] and row["trace_tag"] == snoops[0]["trace_tag"]
         beat = row["data_id"]
         assert bytes.fromhex(row["data"]) == dirty[beat * 32:(beat + 1) * 32]
@@ -70,8 +73,8 @@ def check(events, seed):
             "residentHitAddress": addresses[5], "dirtyMemoryReadbackAddress": addresses[0]}
 
 
-def mutations(events, seed):
-    check(events, seed)
+def mutations(events, seed, topo=None):
+    check(events, seed, topo)
     def corrupt_data(rows):
         row = next(r for r in rows if r["handshake"] and r["direction"] == "chi_tx_dat" and r["opcode"] == 2)
         row["data"] = f"{int(row['data'][:2], 16) ^ 1:02x}" + row["data"][2:]
@@ -102,7 +105,7 @@ def mutations(events, seed):
         copied = deepcopy(events)
         action(copied)
         try:
-            check(copied, seed)
+            check(copied, seed, topo)
         except (AssertionError, KeyError):
             continue
         raise AssertionError("victim checker accepted mutation: " + action.__name__)
@@ -112,5 +115,6 @@ def mutations(events, seed):
 if __name__ == "__main__":
     root = Path(sys.argv[1])
     rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
-    count = mutations(rows[1:], rows[0]["seed"])
+    topo = json.loads((root / "topology.json").read_text()) if (root / "topology.json").exists() else None
+    count = mutations(rows[1:], rows[0]["seed"], topo)
     print(f"independent victim trace checker rejected {count} invalid observations")

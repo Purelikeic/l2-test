@@ -6,8 +6,8 @@ namespace compactchi {
 void EbHome::require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
 }
-bool EbHome::isRead(unsigned op) { return op == 7 || op == 0x26; }
-bool EbHome::isWrite(unsigned op) { return op == 0x42 || op == 0x1b || op == 0x17 || op == 0x0d; }
+bool EbHome::isRead(unsigned op) { return op == 7 || op == 0x26 || op == 4; }
+bool EbHome::isWrite(unsigned op) { return op == 0x42 || op == 0x1b || op == 0x17 || op == 0x0d || op == 0x1c || op == 0x1d; }
 EbHome::EbHome(chi_agent::HomeMemory& memory, TLLocalContext& local, GlobalBoard<paddr_t>& global,
                unsigned node, size_t capacity)
     : memory(memory), local(local), global(global), node(node), capacity(capacity) {
@@ -18,6 +18,9 @@ bool EbHome::requestReady(const EbRequest& req) const {
     const auto previous = transactions.find(key);
     const bool reissue = previous != transactions.end() && contexts.at(previous->second).retryPending;
     if (!reissue && contexts.size() >= capacity) return false;
+    if (req.opcode == 4 || req.opcode == 0x1c || req.opcode == 0x1d) return true;
+    if (req.opcode == 0x10 || req.opcode == 0x11 || req.opcode == 0x0f)
+        for (const auto& [id, c] : contexts) if (c.copyback && c.request.address == req.address) return false;
     if (!isRead(req.opcode)) return true; // Copyback storage is reserved at DBID allocation.
     unsigned reservedReads = 0;
     for (const auto& [id, ctx] : contexts) {
@@ -29,13 +32,21 @@ bool EbHome::requestReady(const EbRequest& req) const {
     return memory.ready(false);
 }
 void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
-    require(isRead(req.opcode) || isWrite(req.opcode), "unsupported E.b Home profile opcode");
-    require(req.target == node && req.source < 2048 && !(req.address & 63) && req.size == 6 && req.txn < 4096,
-            "invalid E.b Home route, line size or TxnID");
-    require((req.memAttr & 4) && req.order == 0 && !req.ns,
-            "unsupported normal cacheable request attributes");
-    require(memory.backend().accessible(req.address) && memory.backend().accessible(req.address + 63),
-            "E.b request is outside the configured Home memory region");
+    const bool device = req.opcode == 4 || req.opcode == 0x1c || req.opcode == 0x1d;
+    const bool control = req.opcode == 0x0c || req.opcode == 0x10 || req.opcode == 0x11 || req.opcode == 0x0f;
+    require(isRead(req.opcode) || isWrite(req.opcode) || control, "unsupported E.b Home opcode");
+    require(req.target == node && req.source < 2048 && req.txn < 4096 &&
+            (device ? req.size <= 6 && !(req.address & ((uint64_t(1) << req.size) - 1)) : !(req.address & 63) && req.size == 6),
+            "invalid E.b route, size or TxnID");
+    if (device) {
+        const auto& cfg = local.config();
+        require(cfg.mmioEnable && req.address >= cfg.mmioStart && req.address < cfg.mmioEnd &&
+            (uint64_t(1) << req.size) <= cfg.mmioEnd - req.address && !req.allowRetry, "device outside configured no-retry region");
+    } else {
+        require((req.memAttr & 4) && req.order == 0 && !req.ns, "unsupported cacheable attributes");
+        require(memory.backend().accessible(req.address) && memory.backend().accessible(req.address + 63), "Home line outside memory");
+        if (control && req.opcode != 0x0c) require(local.config().cmoEnable, "CMO disabled by configuration");
+    }
     require(requestReady(req), "E.b Home accepted without reserved capacity");
     const bool write = isWrite(req.opcode);
     const auto key = std::make_tuple(req.source, req.txn, write);
@@ -59,8 +70,8 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
         start(previous->second);
         return;
     }
-    require(req.allowRetry && req.pCrdType == 0, "initial request used a credit without a modeled Retry obligation");
-    if (!write) require(req.expCompAck, "cacheable read did not request CompAck");
+    require((device ? !req.allowRetry : req.allowRetry) && req.pCrdType == 0, "initial retry/credit contract invalid");
+    if (!write) require(req.expCompAck == (!device && (!control || req.opcode == 0x0c)), "CompAck contract invalid");
     if (req.opcode == 0x42) require(req.expCompAck, "WriteEvictOrEvict did not request CompAck");
     if (write && req.opcode != 0x42) require(!req.expCompAck, "ordinary copyback/Evict must not request CompAck");
     require(plan.completionSource < 2048 && plan.retryIssuer < 2048 && plan.creditType < 16,
@@ -72,10 +83,18 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
     require(!contexts.count(owner), "Home internal memory ID wrapped into a live context");
     const bool copyback = req.opcode == 0x1b || req.opcode == 0x17 ||
         (req.opcode == 0x42 && plan.cleanCopyback);
-    const bool ack = !write || (req.opcode == 0x42 && !copyback);
-    const unsigned ackTarget = !write && plan.separated && plan.completionSource ?
+    const bool ack = (!write && req.expCompAck) || (req.opcode == 0x42 && !copyback);
+    const unsigned ackTarget = !write && !control && !device && plan.separated && plan.completionSource ?
         plan.completionSource : node;
     Context ctx{req, plan, dbid, ackTarget, write, copyback, ack};
+    ctx.control = control; ctx.device = device;
+    if (device) {
+        ctx.dataMask = req.size == 6 ? 3 : 1U << ((req.address >> 5) & 1);
+        if (write) {
+            require(bool(deviceOracle), "device write lacks independent node intent");
+            const auto expected = deviceOracle(req.address); ctx.expected = expected.first; ctx.byteMask = expected.second;
+        }
+    }
     if (copyback) {
         // This is expected architectural data, never data learned from the DUT.
         if (global.haskey(req.address)) {
@@ -88,7 +107,7 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
     contexts.emplace(owner, ctx);
     transactions.emplace(key, owner);
     dbids.emplace(dbid, owner);
-    if (plan.retryOnce) {
+    if (plan.retryOnce && !device) {
         contexts.at(owner).retryPending = true;
         const unsigned issuer = plan.retryIssuer ? plan.retryIssuer : node;
         const QueuedRsp retry{{issuer, req.source, req.txn, 3, 0, 0, false, plan.creditType}, owner, RspKind::Retry};
@@ -101,7 +120,18 @@ void EbHome::start(unsigned owner) {
     auto& ctx = contexts.at(owner);
     const auto& req = ctx.request;
     const auto& plan = ctx.plan;
-    if (!ctx.write) {
+    if (ctx.device) {
+        if (ctx.write) responses.push_back({{node, req.source, req.txn, 5, ctx.dbid, 0, plan.responseTraceTag}, owner});
+        else {
+            const auto& bytes = deviceMemory[req.address & ~uint64_t(63)];
+            for (unsigned beat = 0; beat < 2; ++beat) if (ctx.dataMask & (1U << beat)) {
+                EbData flit{node, req.source, req.txn, 4, ctx.dbid, node, beat * 2, 0, plan.responseTraceTag};
+                std::copy_n(bytes.begin() + beat * 32, 32, flit.data.begin()); data.push_back({flit, owner});
+            }
+        }
+    } else if (ctx.control) {
+        responses.push_back({{node, req.source, req.txn, 4, ctx.dbid, req.opcode == 0x0c ? 2U : 0U, plan.responseTraceTag}, owner});
+    } else if (!ctx.write) {
         memory.submit({owner, req.address, false});
         ctx.memoryPending = true;
         if (plan.separated && !plan.completionAfterData) enqueueCompletion(owner);
@@ -141,6 +171,7 @@ void EbHome::service() {
                 "memory completion changed the Home line/owner");
         if (result.write) {
             require(ctx.copyback && ctx.receivedMask == 3, "write memory completion preceded complete copyback");
+            if (committed) committed(ctx.request.address, ctx.expected);
             memory.popCompletion();
             finish(result.id);
         } else {
@@ -178,7 +209,7 @@ void EbHome::responseAccepted() {
     }
     require(!ctx.rspAccepted, "Home completion delivered twice");
     ctx.rspAccepted = true;
-    const bool retire = ctx.write && !ctx.copyback && !ctx.needAck;
+    const bool retire = (ctx.write || ctx.control) && !ctx.copyback && !ctx.needAck && !ctx.device;
     responses.pop_front();
     if (retire) finish(item.owner);
 }
@@ -190,7 +221,9 @@ void EbHome::dataAccepted() {
     require(!(ctx.sentMask & (1U << beat)), "Home read data delivered twice");
     ctx.sentMask |= 1U << beat;
     if (ctx.sentMask == 3 && ctx.plan.separated && ctx.plan.completionAfterData) enqueueCompletion(item.owner);
+    const bool deviceDone = ctx.device && ctx.sentMask == ctx.dataMask;
     data.pop_front();
+    if (deviceDone) finish(item.owner);
 }
 void EbHome::receiveCompAck(unsigned source, unsigned target, unsigned dbid, bool traceTag) {
     require(dbids.count(dbid), "unknown E.b CompAck DBID");
@@ -198,7 +231,9 @@ void EbHome::receiveCompAck(unsigned source, unsigned target, unsigned dbid, boo
     const auto& ctx = contexts.at(owner);
     require(!ctx.retryPending && ctx.needAck && source == ctx.request.source && target == ctx.ackTarget,
             "unexpected or misrouted E.b CompAck");
-    if (!ctx.write) {
+    if (ctx.control) {
+        require(ctx.rspAccepted && traceTag == ctx.plan.responseTraceTag, "permission CompAck completion/tag mismatch");
+    } else if (!ctx.write) {
         require(ctx.sentMask == 3 && (!ctx.plan.separated || ctx.rspAccepted),
                 "AnserL2 CompAck preceded full read completion");
         const bool expectedTag = ctx.plan.separated ? ctx.plan.responseTraceTag :
@@ -246,6 +281,7 @@ void EbHome::commitSnoopData(uint64_t address, const chi_agent::Line& data) {
     ctx.rspAccepted = true;
     ctx.homeMemoryOnly = true;
     ctx.receivedMask = 3;
+    std::copy_n(golden->data->data, 64, ctx.expected.begin());
     ctx.received = data;
     ctx.memoryPending = true;
     contexts.emplace(owner, ctx);

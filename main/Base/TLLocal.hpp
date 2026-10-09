@@ -16,7 +16,12 @@ enum class TLSequenceMode {
     FUZZ_COUNTER_SYNC,
     STREAM_COPY2,
     STREAM_MULTI,
-    BWPROF_STREAM_STRIDE_READ
+    BWPROF_STREAM_STRIDE_READ,
+    DETERMINISTIC_READ,
+    RANDOM_READ,
+    LOWER_SNOOP,
+    VICTIM,
+    NODE_ACTIONS
 };
 
 enum class TLUnifiedSequenceMode {

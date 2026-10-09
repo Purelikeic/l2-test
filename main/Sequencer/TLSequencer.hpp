@@ -66,6 +66,8 @@ public:
 private:
     State                   state;
     TestProtocolAdapter*    protocol = nullptr;
+    std::vector<std::unique_ptr<TestNode>> actionNodes;
+    std::unique_ptr<NodeFuzzer> actionFuzzer;
     void                    TockProtocol() noexcept;
     void                    FinalizeProtocol() noexcept;
 
@@ -113,7 +115,10 @@ public:
     size_t          GetULAgentCount() const noexcept;
 
     void            Initialize(const TLLocalConfig& cfg) noexcept;
+    void            Initialize(const TLLocalConfig& cfg, TestProtocolAdapter& adapter) noexcept;
     void            InitializeProtocol(const TLLocalConfig& cfg, TestProtocolAdapter& adapter) noexcept;
+    const std::vector<std::unique_ptr<TestNode>>& GetActionNodes() const { return actionNodes; }
+    NodeFuzzer* GetActionFuzzer() const { return actionFuzzer.get(); }
     void            Finalize() noexcept;
     void            Tick(uint64_t cycles) noexcept;
     void            Tock() noexcept;

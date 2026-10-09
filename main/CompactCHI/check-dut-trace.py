@@ -9,98 +9,113 @@ root = Path(sys.argv[1])
 randomized = sys.argv[2:] == ["random-read"]
 lower_profile = sys.argv[2:] == ["lower-snoop"]
 victim_profile = sys.argv[2:] == ["victim"]
-profile = "victim" if victim_profile else "random-read" if randomized else "lower-snoop" if lower_profile else "deterministic-read"
+profile = sys.argv[2] if len(sys.argv) > 2 else "deterministic-read"
+if profile == "configured" and (root / "scenario.json").exists():
+    profile = {0: "configured", 1: "deterministic-read", 2: "random-read", 3: "lower-snoop", 4: "victim", 5: "node-actions", 6: "deterministic-read"}[json.loads((root / "scenario.json").read_text())]
+randomized, lower_profile, victim_profile = profile == "random-read", profile == "lower-snoop", profile == "victim"
 scopes = runpy.run_path(str(Path(__file__).with_name("profile_scopes.py")))["SCOPES"]
 rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
 seed = rows[0]["seed"]
 events = rows[1:]
 assert all(r["sim_time"] == 2 * r["cycle"] for r in events)
-assert {r["trace_tag"] for r in events if r["direction"] == "cchi_rx_req"} == {False, True}
+if profile != "configured":
+    assert {r["trace_tag"] for r in events if r["direction"] == "cchi_rx_req"} == {False, True}
 assert [r["cycle"] for r in events] == sorted(r["cycle"] for r in events)
-requests = {}
-held = {}
-for row in events:
-    direction = row["direction"]
-    fields = {key: value for key, value in row.items()
-              if key not in ("cycle", "sim_time", "ready", "handshake")}
-    if direction in held:
-        previousCycle, previousFields = held[direction]
-        assert row["cycle"] == previousCycle + 1 and fields == previousFields, (
-            direction, row["cycle"], "offered valid/flit changed under stall")
-    if row["valid"] and not row["ready"]: held[direction] = row["cycle"], fields
-    else: held.pop(direction, None)
-assert not held, "terminal stalled flit was not consumed"
-beats = {}
-acks = {}
-latency = {}
-for row in events:
-    if not row["handshake"]:
-        continue
-    direction = row["direction"]
-    if direction == "cchi_rx_req":
-        key = row["node"], row["txn_id"]
-        assert key not in requests
-        requests[key] = row
-    elif direction == "cchi_tx_dat":
-        key = row["target"], row["txn_id"]
-        req = requests[key]
-        beat = row["data_id"]
-        assert beat in (0, 1) and beat not in beats.setdefault(key, set())
-        beats[key].add(beat)
-        expected = bytearray(((req["address"] >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
-        if victim_profile and req["node"] == 0 and req["address"] == 0x1000:
-            expected[0] ^= 0xa5
-            expected[63] ^= 0x5a
-        assert bytes.fromhex(row["data"]) == expected[beat * 32:(beat + 1) * 32]
-        assert row["trace_tag"] == req["trace_tag"] and row["resp_err"] == 0
-        if req["opcode"] == 3:
-            assert row["resp"] in (0, 2)
-        elif req["opcode"] == 4:
-            assert row["resp"] in (1, 2, 6)
-            acks[row["target"], row["dbid"]] = key
-        elif req["opcode"] == 16:
-            assert row["resp"] in (2, 6)
-            acks[row["target"], row["dbid"]] = key
-        if beats[key] == {0, 1}:
-            latency[str(key)] = row["cycle"] - req["cycle"]
-    elif direction == "cchi_rx_rsp" and row["opcode"] == 0:
-        key = acks.pop((row["node"], row["txn_id"]))
-        assert beats[key] == {0, 1}
-expected_requests = 10 if victim_profile else 96 if randomized else 5 if lower_profile else 4
-assert len(requests) == expected_requests and len(beats) == expected_requests and not acks
-if randomized:
-    assert {key[0] for key in requests} == {0, 1, 2, 3}
-    for (node, txn), request in requests.items():
-        if node in (0, 3): assert request["opcode"] == 3
-        else: assert request["opcode"] == 16 and request["address"] == 0x1000 + (node - 1) * 64
-assert all(b == {0, 1} for b in beats.values())
-# Assert that intended separated completion and retry stimulus actually fired.
-if not victim_profile:
-    assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 11 and r["handshake"] for r in events)
-    assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 3 and r["handshake"] for r in events)
-    assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 7 and r["handshake"] for r in events)
-victim_evidence = None
-if victim_profile:
-    victim_evidence = runpy.run_path(str(Path(__file__).with_name("check-victim-events.py")))["check"](events, seed)
+node_check = runpy.run_path(str(Path(__file__).with_name("check-node-events.py")))
+topo = node_check["topology"](root)
+base = topo["memoryStart"]
+coherent = [n["id"] for n in topo["nodes"] if n["kind"] == 0 and n["mode"] != 0]
+transient = [n["id"] for n in topo["nodes"] if n["kind"] == 1 and n["mode"] != 0]
+node_evidence = node_check["check"](root, events, seed, action_mode=profile == "node-actions")
+if profile in ("node-actions", "configured"):
+    expected_requests = sum(r["direction"] == "cchi_rx_req" and r["handshake"] for r in events)
+    latency = {}
+    victim_evidence = None
+else:
+    requests = {}
+    held = {}
+    for row in events:
+        direction = row["direction"]
+        fields = {key: value for key, value in row.items()
+                  if key not in ("cycle", "sim_time", "ready", "handshake")}
+        if direction in held:
+            previousCycle, previousFields = held[direction]
+            assert row["cycle"] == previousCycle + 1 and fields == previousFields, (
+                direction, row["cycle"], "offered valid/flit changed under stall")
+        if row["valid"] and not row["ready"]: held[direction] = row["cycle"], fields
+        else: held.pop(direction, None)
+    assert not held, "terminal stalled flit was not consumed"
+    beats = {}
+    acks = {}
+    latency = {}
+    for row in events:
+        if not row["handshake"]:
+            continue
+        direction = row["direction"]
+        if direction == "cchi_rx_req":
+            key = row["node"], row["txn_id"]
+            assert key not in requests
+            requests[key] = row
+        elif direction == "cchi_tx_dat":
+            key = row["target"], row["txn_id"]
+            req = requests[key]
+            beat = row["data_id"]
+            assert beat in (0, 1) and beat not in beats.setdefault(key, set())
+            beats[key].add(beat)
+            expected = bytearray(((req["address"] >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
+            if victim_profile and req["opcode"] == 3 and req["address"] == base:
+                expected[0] ^= 0xa5
+                expected[63] ^= 0x5a
+            assert bytes.fromhex(row["data"]) == expected[beat * 32:(beat + 1) * 32]
+            assert row["trace_tag"] == req["trace_tag"] and row["resp_err"] == 0
+            if req["opcode"] == 3:
+                assert row["resp"] in (0, 2)
+            elif req["opcode"] == 4:
+                assert row["resp"] in (1, 2, 6)
+                acks[row["target"], row["dbid"]] = key
+            elif req["opcode"] == 16:
+                assert row["resp"] in (2, 6)
+                acks[row["target"], row["dbid"]] = key
+            if beats[key] == {0, 1}:
+                latency[str(key)] = row["cycle"] - req["cycle"]
+        elif direction == "cchi_rx_rsp" and row["opcode"] == 0:
+            key = acks.pop((row["node"], row["txn_id"]))
+            assert beats[key] == {0, 1}
+    expected_requests = 10 if victim_profile else 96 if randomized else 5 if lower_profile else 4
+    assert len(requests) == expected_requests and len(beats) == expected_requests and not acks
+    if randomized:
+        assert {key[0] for key in requests} == set(coherent[:2] + transient[:2])
+        for (node, txn), request in requests.items():
+            if node in transient: assert request["opcode"] == 3
+            else: assert request["opcode"] == 16 and request["address"] == base + coherent.index(node) * 64
+    assert all(b == {0, 1} for b in beats.values())
+    # Assert that intended separated completion and retry stimulus actually fired.
+    if not victim_profile:
+        assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 11 and r["handshake"] for r in events)
+        assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 3 and r["handshake"] for r in events)
+        assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 7 and r["handshake"] for r in events)
+    victim_evidence = None
+    if victim_profile:
+        victim_evidence = runpy.run_path(str(Path(__file__).with_name("check-victim-events.py")))["check"](events, seed, topo)
 
-if lower_profile:
-    lower_requests = [r for r in events if r["direction"] == "chi_rx_snp" and r["handshake"]]
-    assert [(r["txn_id"], r["opcode"]) for r in lower_requests] == [(2048, 1), (2049, 23)]
-    dirty = bytearray(((0x1040 >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
-    dirty[0] ^= 0xa5
-    home_data = [r for r in events if r["direction"] == "chi_tx_dat" and r["target"] == 8 and r["handshake"]]
-    dct_data = [r for r in events if r["direction"] == "chi_tx_dat" and r["target"] == 12 and r["handshake"]]
-    assert len(home_data) == len(dct_data) == 2
-    for records, txn, opcode, resp in ((home_data, 2048, 1, 5), (dct_data, 2500, 4, 2)):
-        assert {r["data_id"] for r in records} == {0, 2}
-        for row in records:
-            assert row["txn_id"] == txn and row["opcode"] == opcode and row["resp"] == resp
-            beat = row["data_id"] // 2
-            assert bytes.fromhex(row["data"]) == dirty[beat * 32:(beat + 1) * 32]
-    assert all(r["dbid"] == 2049 and r["home_node"] == 8 for r in dct_data)
-    assert all(r["trace_tag"] is True for r in home_data + dct_data + lower_requests)
-    forwarded = [r for r in events if r["direction"] == "chi_tx_rsp" and r["txn_id"] == 2049 and r["handshake"]]
-    assert len(forwarded) == 1 and forwarded[0]["opcode"] == 9 and forwarded[0]["resp"] == 0 and forwarded[0]["forward_state"] == 2
+    if lower_profile:
+        lower_requests = [r for r in events if r["direction"] == "chi_rx_snp" and r["handshake"]]
+        assert [(r["txn_id"], r["opcode"]) for r in lower_requests] == [(2048, 1), (2049, 23)]
+        dirty = bytearray((((base + 64) >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
+        dirty[0] ^= 0xa5
+        home_data = [r for r in events if r["direction"] == "chi_tx_dat" and r["target"] == 8 and r["handshake"]]
+        dct_data = [r for r in events if r["direction"] == "chi_tx_dat" and r["target"] == 12 and r["handshake"]]
+        assert len(home_data) == len(dct_data) == 2
+        for records, txn, opcode, resp in ((home_data, 2048, 1, 5), (dct_data, 2500, 4, 2)):
+            assert {r["data_id"] for r in records} == {0, 2}
+            for row in records:
+                assert row["txn_id"] == txn and row["opcode"] == opcode and row["resp"] == resp
+                beat = row["data_id"] // 2
+                assert bytes.fromhex(row["data"]) == dirty[beat * 32:(beat + 1) * 32]
+        assert all(r["dbid"] == 2049 and r["home_node"] == 8 for r in dct_data)
+        assert all(r["trace_tag"] is True for r in home_data + dct_data + lower_requests)
+        forwarded = [r for r in events if r["direction"] == "chi_tx_rsp" and r["txn_id"] == 2049 and r["handshake"]]
+        assert len(forwarded) == 1 and forwarded[0]["opcode"] == 9 and forwarded[0]["resp"] == 0 and forwarded[0]["forward_state"] == 2
 
 ports = {
     "cchi_rx_req": "req", "cchi_rx_evt": "evt", "cchi_rx_rsp": "upRspIn", "cchi_rx_dat": "upDatIn",
@@ -176,7 +191,7 @@ assert not by_time and checked == len(events)
 evidence = {"profile": profile, "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
-            "scope": scopes[profile]}
+            "scope": scopes[profile], "nodeEvidence": node_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:
@@ -184,4 +199,4 @@ if latency:
     evidence["latencySummaryCycles"] = {"min": samples[0], "max": samples[-1],
         "p50": samples[(len(samples) - 1) // 2], "p95": samples[(len(samples) - 1) * 95 // 100]}
 (root / "trace-evidence.json").write_text(json.dumps(evidence, indent=2))
-print(f"seed={seed}: independent {expected_requests}-read data/obligations and {checked} exact VCD samples passed; latency={evidence.get('latencySummaryCycles')}")
+print(f"seed={seed}: independent {expected_requests}-REQ data/obligations and {checked} exact VCD samples passed; latency={evidence.get('latencySummaryCycles')}")

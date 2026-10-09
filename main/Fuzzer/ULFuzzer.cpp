@@ -26,6 +26,9 @@ static inline size_t fact(size_t n) noexcept
 
 ULFuzzer::ULFuzzer(tl_agent::ULAgent *ulAgent) noexcept {
     this->ulAgent = ulAgent;
+    this->startupInterval = 0;
+    const auto selected = ulAgent->config().sequenceModes.find(ulAgent->sysId());
+    this->mode = selected == ulAgent->config().sequenceModes.end() ? TLSequenceMode::FUZZ_ARI : selected->second;
 
     this->memoryStart                   = ulAgent->config().memoryStart;
     this->memoryEnd                     = ulAgent->config().memoryEnd;

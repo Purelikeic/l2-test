@@ -185,6 +185,11 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
                     tlcfg.sequenceModes[i] = TLSequenceMode::STREAM_MULTI;
                 else if (mode.compare("bwprof_stream_stride_read") == 0)
                     tlcfg.sequenceModes[i] = TLSequenceMode::BWPROF_STREAM_STRIDE_READ;
+                else if (mode == "deterministic_read") tlcfg.sequenceModes[i] = TLSequenceMode::DETERMINISTIC_READ;
+                else if (mode == "random_read") tlcfg.sequenceModes[i] = TLSequenceMode::RANDOM_READ;
+                else if (mode == "lower_snoop") tlcfg.sequenceModes[i] = TLSequenceMode::LOWER_SNOOP;
+                else if (mode == "victim") tlcfg.sequenceModes[i] = TLSequenceMode::VICTIM;
+                else if (mode == "node_actions") tlcfg.sequenceModes[i] = TLSequenceMode::NODE_ACTIONS;
                 else
                 {
                     LogInfo("INI", 

@@ -9,6 +9,9 @@
 #include "LowerSnoopBoard.hpp"
 #include "CanonicalTrace.hpp"
 #include "VictimProfile.hpp"
+#include "NodeAgent.hpp"
+#include <set>
+#include <iomanip>
 #include <algorithm>
 #include <filesystem>
 #include <memory>
@@ -16,7 +19,7 @@
 #include <cstdio>
 
 namespace {
-class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
+class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public TestScenarioHooks {
     VL2Cache& dut;
     VerilatedContext& simulation;
     TLLocalConfig* cfg = nullptr;
@@ -32,21 +35,18 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
     unsigned lowerPhase = 0;
     compactchi::LineData dirtyLine{};
     std::unique_ptr<compactchi::CanonicalTrace> trace;
-    std::mt19937 random, trafficRandom;
-    bool randomized;
+    std::mt19937 random;
+    TestScenario scenario;
     bool mutateData;
-    std::vector<compactchi::RequestFlit> replay;
-    unsigned limitRequests;
-    std::ofstream stimulus;
-    unsigned issued = 0, quiet = 0, downRequests = 0;
+    std::vector<PlannedTestAction> replay;
+    NodeFuzzer* actionScheduler = nullptr;
+    std::set<uint64_t> initializedLines;
+    std::optional<std::pair<uint64_t, compactchi::EbData>> forwardAck;
+    std::ofstream stimulus, actions, rejections;
+    unsigned quiet = 0, downRequests = 0;
     bool successful = false;
     std::filesystem::path output;
-    class ReadFuzzer : public Fuzzer {
-        DutAdapter& owner;
-    public:
-        explicit ReadFuzzer(DutAdapter& owner) : owner(owner) {}
-        void tick() override { owner.generate(); }
-    } fuzzer{*this};
+
     compactchi::EbRequest downRequest() const {
         compactchi::EbRequest request{dut.io_downReq_bits_srcID, dut.io_downReq_bits_tgtID,
             dut.io_downReq_bits_txnID, dut.io_downReq_bits_opcode, dut.io_downReq_bits_addr,
@@ -95,116 +95,110 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
         }
         trace->record(event);
     }
-    void generate() {
-        // First deterministic profile: distinct transient/coherent identities,
-        // one persistent client, known lines, and serialized read obligations.
-        // This is not yet an N-node random transaction generator.
-        static constexpr unsigned opcodes[] = {3, 4, 16, 3, 16};
-        static constexpr unsigned nodes[] = {0, 1, 1, 0, 1};
-        static constexpr uint64_t addresses[] = {0x1000, 0x1040, 0x1040, 0x1040, 0x1040};
-        if (victimProfile && issued == 1 && !victim.dirtyStored &&
-            requester->idle() && board->idle() && home->idle()) {
-            requester->store(1, compactchi::VictimProfile::address(0), compactchi::VictimProfile::dirty(cfg->seed));
-            victim.dirtyStored = true;
-            stimulus << "# store " << cycle() << " 1 " << compactchi::VictimProfile::address(0) << '\n';
-            stimulus.flush();
+    bool ready() const override { return requester->idle() && board->idle() && home->idle(); }
+    void lowerShared(uint64_t address) override {
+        const compactchi::LowerSnoop snoop{2048, 1, address, false, true};
+        lowerBoard->issue(snoop, compactchi::Permission::UD);
+        lowerQueue.push_back(snoop); lowerPhase = 1;
+    }
+    bool lowerSharedComplete() override {
+        const uint64_t address = cfg->memoryStart + 64;
+        if (lowerPhase == 1 && lowerBoard->complete(2048) && home->snoopCommitReady()) {
+            const auto result = lowerBoard->retire(2048);
+            if (result.dutAfter != compactchi::Permission::SC || result.dirtySink != compactchi::DirtySink::Home)
+                throw std::runtime_error("dirty lower Snoop responsibility mismatch");
+            home->commitSnoopData(address, result.latest); lowerPhase = 2;
         }
-        if (issued < limitRequests && requester->idle() && board->idle() && home->idle()) {
-            unsigned source, opcode;
-            uint64_t address;
-            if (!replay.empty()) {
-                source = replay[issued].node; opcode = replay[issued].opcode; address = replay[issued].address;
-            } else if (victimProfile) {
-                source = issued == 0 ? 1 : 0;
-                opcode = issued == 0 ? 16 : 3;
-                address = compactchi::VictimProfile::requestAddress(issued);
-            } else if (randomized) {
-                const unsigned line = trafficRandom() % 2;
-                address = 0x1000 + line * 64;
-                const bool persistent = trafficRandom() % 2;
-                source = persistent ? line + 1 : (trafficRandom() % 2 ? 0 : 3);
-                opcode = persistent ? 16 : 3;
-                // Identity 1 owns only line 0, identity 2 only line 1. Each
-                // line has at most one persistent owner; other identities are
-                // ReadOnce-only. Transactions serialize per profile.
-            } else {
-                source = nodes[issued]; opcode = opcodes[issued]; address = addresses[issued];
-            }
-            const unsigned txn = replay.empty() ? 20 + issued : replay[issued].txn;
-            const bool tag = replay.empty() ? (issued % 2 == 0) : replay[issued].traceTag;
-            stimulus << cycle() << ' ' << source << ' ' << txn << ' ' << opcode << ' ' << address << ' ' << tag << '\n';
-            stimulus.flush();
-            requester->enqueue({source, 1, txn, opcode, address, tag});
-            ++issued;
+        if (lowerPhase != 2 || !home->idle()) return false;
+        for (unsigned i = 0; i < 64; ++i)
+            if (memory->backend().access(address + i) != dirtyLine[i]) throw std::runtime_error("dirty Snoop memory mismatch");
+        return true;
+    }
+    void lowerUniqueForward(uint64_t address) override {
+        const compactchi::LowerSnoop snoop{2049, 0x17, address, false, true, 12, 2500};
+        lowerBoard->issue(snoop, compactchi::Permission::SC); lowerQueue.push_back(snoop); lowerPhase = 3;
+    }
+    bool lowerForwardComplete() override {
+        if (lowerPhase != 3 || !lowerBoard->complete(2049)) return false;
+        const auto result = lowerBoard->retire(2049);
+        if (result.dutAfter != compactchi::Permission::I || result.forwardAfter != compactchi::Permission::UC ||
+            result.dirtySink != compactchi::DirtySink::None) throw std::runtime_error("forward state mismatch");
+        lowerPhase = 4; return true;
+    }
+    void prepare(uint64_t address) {
+        address &= ~uint64_t(63);
+        if (!memory->backend().accessible(address) || !memory->backend().accessible(address + 63))
+            throw std::invalid_argument("action/prefetch line outside configured memory");
+        if (!initializedLines.insert(address).second) return;
+        const auto bytes = compactchi::VictimProfile::initial(address, cfg->seed);
+        for (unsigned i = 0; i < 64; ++i) memory->backend().access(address + i) = bytes[i];
+        board->initialize(address, bytes);
+    }
+    void maintain() {
+        if (forwardAck && cycle() >= forwardAck->first) {
+            const auto& data = forwardAck->second;
+            lowerBoard->forwardCompAck(data.target, 8, data.dbid, data.traceTag);
+            forwardAck.reset();
         }
-        if (lowerProfile && issued == limitRequests && requester->idle() && board->idle() && home->idle()) {
-            if (lowerPhase == 0) {
-                for (unsigned i = 0; i < 64; ++i) dirtyLine[i] = uint8_t((0x1040 >> 6) ^ (i * 17) ^ cfg->seed);
-                dirtyLine[0] ^= 0xa5;
-                requester->store(1, 0x1040, dirtyLine);
-                const compactchi::LowerSnoop snoop{2048, 1, 0x1040, false, true};
-                lowerBoard->issue(snoop, compactchi::Permission::UD);
-                lowerQueue.push_back(snoop);
-                lowerPhase = 1;
-            } else if (lowerPhase == 1 && lowerBoard->complete(2048) && home->snoopCommitReady()) {
-                const auto result = lowerBoard->retire(2048);
-                if (result.dutAfter != compactchi::Permission::SC || result.dirtySink != compactchi::DirtySink::Home)
-                    throw std::runtime_error("dirty lower Snoop responsibility mismatch");
-                home->commitSnoopData(0x1040, result.latest);
-                lowerPhase = 2;
-            } else if (lowerPhase == 2) {
-                for (unsigned i = 0; i < 64; ++i)
-                    if (memory->backend().access(0x1040 + i) != dirtyLine[i])
-                        throw std::runtime_error("dirty Snoop data did not commit to Home memory");
-                const compactchi::LowerSnoop snoop{2049, 0x17, 0x1040, false, true, 12, 2500};
-                lowerBoard->issue(snoop, compactchi::Permission::SC);
-                lowerQueue.push_back(snoop);
-                lowerPhase = 3;
-            } else if (lowerPhase == 3 && lowerBoard->complete(2049)) {
-                const auto result = lowerBoard->retire(2049);
-                if (result.dutAfter != compactchi::Permission::I || result.forwardAfter != compactchi::Permission::UC ||
-                    result.dirtySink != compactchi::DirtySink::None)
-                    throw std::runtime_error("clean UniqueFwd state mismatch");
-                lowerPhase = 4;
-            }
-        }
-        if (issued == limitRequests && (!lowerProfile || lowerPhase == 4) &&
-            (!victimProfile || victim.complete()) &&
-            requester->idle() && board->idle() && home->idle() && lowerBoard->idle() &&
-            !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
+        if (actionScheduler && actionScheduler->done() && ready() && lowerBoard->idle() && !forwardAck &&
+            (!victimProfile || victim.complete()) && !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
         else quiet = 0;
         if (quiet == 20) {
             if (victimProfile) {
-                const auto expected = compactchi::VictimProfile::dirty(cfg->seed);
+                const auto expected = compactchi::VictimProfile::dirty(cfg->seed, cfg->memoryStart);
                 for (unsigned i = 0; i < 64; ++i)
-                    if (memory->backend().access(compactchi::VictimProfile::address(0) + i) != expected[i])
-                        throw std::runtime_error("dirty victim did not commit to the original Home MemoryAgent");
-                if (board->state(compactchi::VictimProfile::address(0)).permission != compactchi::Permission::I)
-                    throw std::runtime_error("victim recall left an upstream persistent owner");
+                    if (memory->backend().access(cfg->memoryStart + i) != expected[i]) throw std::runtime_error("victim memory mismatch");
+                if (board->state(cfg->memoryStart).permission != compactchi::Permission::I) throw std::runtime_error("victim owner remained");
             }
-            successful = true;
-            TLSystemFinishEvent().Fire();
+            successful = true; TLSystemFinishEvent().Fire();
         }
     }
 public:
-    DutAdapter(VL2Cache& dut, VerilatedContext& simulation, const std::filesystem::path& output, bool randomized,
-               const std::string& replayPath, bool mutateData, bool lowerProfile, bool victimProfile)
-        : dut(dut), simulation(simulation), lowerProfile(lowerProfile), victimProfile(victimProfile),
-          randomized(randomized), mutateData(mutateData),
-          limitRequests(victimProfile ? compactchi::VictimProfile::requests : randomized ? 96 : lowerProfile ? 5 : 4), output(output) {
-        if (victimProfile && (!replayPath.empty() || mutateData))
-            throw std::invalid_argument("victim profile uses fixed independent vectors; read replay/mutation is separate");
+    DutAdapter(VL2Cache& dut, VerilatedContext& simulation, const std::filesystem::path& output,
+               TestScenario scenario, const std::string& replayPath, bool mutateData)
+        : dut(dut), simulation(simulation), lowerProfile(scenario == TestScenario::LowerSnoop),
+          victimProfile(scenario == TestScenario::Victim), scenario(scenario), mutateData(mutateData), output(output) {
         if (!replayPath.empty()) {
             std::ifstream input(replayPath);
-            if (!input) throw std::invalid_argument("cannot open stimulus replay file");
-            uint64_t plannedCycle, address;
-            unsigned source, txn, opcode, tag;
-            while (input >> plannedCycle >> source >> txn >> opcode >> address >> tag)
-                replay.push_back({source, 1, txn, opcode, address, tag != 0});
-            if (!input.eof() || replay.empty() || replay.size() > 256)
-                throw std::invalid_argument("invalid or empty stimulus replay file");
-            limitRequests = replay.size();
+            if (!input) throw std::invalid_argument("cannot open action replay file");
+            uint64_t plannedCycle, address; unsigned source, txn, opcode, tag;
+            while (input >> plannedCycle >> source >> txn >> opcode >> address >> tag) {
+                TestActionKind kind;
+                if (opcode == 3) kind = TestActionKind::ReadOnce;
+                else if (opcode == 4) kind = TestActionKind::AcquireShared;
+                else if (opcode == 16) kind = TestActionKind::AcquireUnique;
+                else throw std::invalid_argument("unsupported replay opcode, never approximated");
+                replay.push_back({source, {kind, address, txn, tag != 0}});
+            }
+            if (!input.eof() || replay.empty() || replay.size() > 256) throw std::invalid_argument("invalid replay");
+            this->scenario = TestScenario::Replay;
         }
+    }
+    bool hasActionNodes() const override { return true; }
+    std::unique_ptr<TestNode> createNode(TestNodeDescriptor descriptor) override {
+        return std::make_unique<compactchi::NodeAgent>(descriptor, *cfg, *requester, *board,
+            [this](uint64_t address) { prepare(address); });
+    }
+    std::unique_ptr<NodeFuzzer> createFuzzer(const TLLocalConfig& config, const std::vector<TestNode*>& nodes) override {
+        auto fuzzer = std::make_unique<NodeFuzzer>(config, nodes, *this, scenario, replay);
+        actionScheduler = fuzzer.get();
+        victimProfile = fuzzer->getScenario() == TestScenario::Victim;
+        lowerProfile = fuzzer->getScenario() == TestScenario::LowerSnoop;
+        std::ofstream selected(output / "scenario.json"); selected << unsigned(fuzzer->getScenario());
+        fuzzer->onRejected([this](const PlannedTestAction& planned, TestActionResult result) {
+            rejections << "{\"cycle\":" << cycle() << ",\"node\":" << planned.node << ",\"kind\":" << unsigned(planned.action.kind)
+                << ",\"address\":" << planned.action.address << ",\"result\":" << unsigned(result) << "}\n"; rejections.flush();
+        });
+        fuzzer->onAction([this](const PlannedTestAction& planned) {
+            const auto& a = planned.action;
+            if (a.kind == TestActionKind::Store) { dirtyLine = a.data; if (victimProfile) victim.dirtyStored = true; }
+            actions << "{\"node\":" << planned.node << ",\"kind\":" << unsigned(a.kind)
+                << ",\"address\":" << a.address << ",\"txn\":" << a.txn << ",\"size\":" << a.size
+                << ",\"trace_tag\":" << (a.traceTag ? "true" : "false") << ",\"byte_enable\":" << a.byteEnable << ",\"data\":\"";
+            for (const auto byte : a.data) actions << std::hex << std::setw(2) << std::setfill('0') << unsigned(byte);
+            actions << std::dec << "\"}\n"; actions.flush();
+        });
+        return fuzzer;
     }
     uint64_t cycle() const noexcept override { return *cycles; }
     int sys() const noexcept override { return 0; }
@@ -216,30 +210,33 @@ public:
     void initialize(TLLocalConfig& config, uint64_t& cycles, GlobalBoard<paddr_t>& global,
                     UncachedBoard<paddr_t>& uncached, axi_agent::MemoryAgent& backend,
                     axi_agent::Bundle<BEATSIZE_MEMORY>& memoryPort) override {
-        const auto requiredEnd = victimProfile ? compactchi::VictimProfile::memoryEnd : 0x2000;
-        if (config.GetAgentCount() < (randomized ? 4U : 2U) || config.memoryStart > 0x1000 || config.memoryEnd < requiredEnd)
-            throw std::invalid_argument("DUT profile lacks its required requester identities or Home memory region");
-        cfg = &config;
-        this->cycles = &cycles;
-        random.seed(config.seed);
-        trafficRandom.seed(config.seed ^ 0x9e3779b9U);
-        stimulus.open(output / "stimulus.txt");
-        if (!stimulus) throw std::runtime_error("cannot open reproducible stimulus plan");
-        fuzzer.set_cycles(&cycles);
-        board = std::make_unique<compactchi::ArchitecturalBoard>(*this, config.GetAgentCount(), global, uncached);
+        cfg = &config; this->cycles = &cycles; random.seed(config.seed);
+        stimulus.open(output / "stimulus.txt"); actions.open(output / "actions.jsonl"); rejections.open(output / "rejections.jsonl");
+        if (!stimulus || !actions || !rejections) throw std::runtime_error("cannot open action evidence");
+        const auto layout = TestNodeLayout(config);
+        board = std::make_unique<compactchi::ArchitecturalBoard>(*this, layout.size(), global, uncached);
         requester = std::make_unique<compactchi::Requester>(*board, 1);
+        requester->configureNodes(layout);
         memory = std::make_unique<chi_agent::HomeMemory>(config, cycles, backend, memoryPort);
         home = std::make_unique<compactchi::EbHome>(*memory, *this, global);
+        home->setDeviceOracle([this](uint64_t address) { return board->deviceWriteExpectation(address); });
+        home->onMemoryCommit([this](uint64_t address, const compactchi::LineData& bytes) { board->memoryCommitted(address, bytes); });
         lowerBoard = std::make_unique<compactchi::LowerSnoopBoard>(*this, global);
         trace = std::make_unique<compactchi::CanonicalTrace>(output / "canonical", config.seed);
-        for (uint64_t address = 0x1000; address < requiredEnd; address += 64) {
-            compactchi::LineData bytes{};
-            for (unsigned i = 0; i < 64; ++i) {
-                bytes[i] = uint8_t((address >> 6) ^ (i * 17) ^ config.seed);
-                backend.access(address + i) = bytes[i];
-            }
-            board->initialize(address, bytes);
+        victim = compactchi::VictimProfile(config.memoryStart, config.memoryEnd);
+        std::ofstream topology(output / "topology.json");
+        topology << "{\"coreCount\":" << config.coreCount << ",\"tlcPerCore\":" << config.masterCountPerCoreTLC
+            << ",\"tlulPerCore\":" << config.masterCountPerCoreTLUL << ",\"memoryStart\":" << config.memoryStart
+            << ",\"memoryEnd\":" << config.memoryEnd << ",\"mmioStart\":" << config.mmioStart
+            << ",\"mmioEnd\":" << config.mmioEnd << ",\"seed\":" << config.seed << ",\"nodes\":[";
+        for (unsigned i = 0; i < layout.size(); ++i) {
+            const auto& d = layout[i];
+            if (i) topology << ',';
+            topology << "{\"id\":" << d.id << ",\"core\":" << d.core << ",\"slot\":" << d.slot
+                << ",\"kind\":" << unsigned(d.kind) << ",\"mode\":"
+                << unsigned(config.sequenceModes.count(d.id) ? config.sequenceModes.at(d.id) : TLSequenceMode::FUZZ_ARI) << '}';
         }
+        topology << "]}";
     }
     void handleChannels() override {
         using C = compactchi::Channel;
@@ -284,7 +281,12 @@ public:
             dut.io_downTxDat_bits_tgtID, dut.io_downTxDat_bits_txnID, dut.io_downTxDat_bits_opcode, dut.io_downTxDat_bits_traceTag,
             std::nullopt, dut.io_downTxDat_bits_dbID, dut.io_downTxDat_bits_dataID, dut.io_downTxDat_bits_resp,
             dut.io_downTxDat_bits_respErr, dut.io_downTxDat_bits_data.data());
-        if (dut.io_req_valid && dut.io_req_ready) requester->requestAccepted();
+        if (dut.io_req_valid && dut.io_req_ready) {
+            const auto& f = requester->request();
+            stimulus << cycle() << ' ' << f.node << ' ' << f.txn << ' ' << f.opcode << ' ' << f.address << ' ' << f.traceTag << '\n';
+            stimulus.flush(); requester->requestAccepted();
+        }
+        if (dut.io_evt_valid && dut.io_evt_ready) requester->eventAccepted();
         if (dut.io_upRspIn_valid && dut.io_upRspIn_ready) requester->responseAccepted();
         if (dut.io_upDatIn_valid && dut.io_upDatIn_ready) requester->dataAccepted();
         if (dut.io_downRsp_valid && dut.io_downRsp_ready) home->responseAccepted();
@@ -304,7 +306,10 @@ public:
             requester->receiveSnoop({dut.io_upSnp_bits_srcID, dut.io_upSnp_bits_tgtID, dut.io_upSnp_bits_txnID,
                 dut.io_upSnp_bits_opcode, uint64_t(dut.io_upSnp_bits_addr) << 3, bool(dut.io_upSnp_bits_traceTag)});
         if (dut.io_downSnp_valid && dut.io_downSnp_ready) lowerQueue.pop_front();
-        if (dut.io_upRsp_valid) throw std::runtime_error("unsupported no-data completion in the initial read profile");
+        if (dut.io_upRsp_valid && dut.io_upRsp_ready)
+            requester->receiveResponse({dut.io_upRsp_bits_srcID, dut.io_upRsp_bits_tgtID, dut.io_upRsp_bits_txnID,
+                dut.io_upRsp_bits_opcode, dut.io_upRsp_bits_resp, bool(dut.io_upRsp_bits_traceTag)},
+                dut.io_upRsp_bits_dbID, dut.io_upRsp_bits_respErr);
         if (dut.io_downReq_valid && dut.io_downReq_ready) {
             compactchi::HomePlan plan;
             plan.separated = (++downRequests % 2) == 0;
@@ -316,6 +321,7 @@ public:
             plan.responseTraceTag = downRequests % 2 == 0;
             // The Home context applies retryOnce only to a first request.
             const auto request = downRequest();
+            if (request.opcode != 4 && request.opcode != 0x1c && request.opcode != 0x1d) prepare(request.address);
             if (victimProfile) plan = victim.observe(request);
             home->accept(request, plan);
         }
@@ -341,20 +347,28 @@ public:
             data.respErr = dut.io_downTxDat_bits_respErr;
             data.byteEnable = dut.io_downTxDat_bits_byteEnable;
             for (unsigned b = 0; b < 32; ++b) data.data[b] = uint8_t(dut.io_downTxDat_bits_data[b / 4] >> ((b % 4) * 8));
-            if (data.opcode == 2) home->receiveCopyback(data);
+            if (data.opcode == 3) home->receiveDeviceData(data);
+            else if (data.opcode == 2) home->receiveCopyback(data);
             else if (data.target == 12) {
                 lowerBoard->forwardData(data);
-                if (data.dataId == 2) lowerBoard->forwardCompAck(12, 8, data.dbid, data.traceTag);
+                if (data.dataId == 2) forwardAck = std::make_pair(cycle() + 1, data);
             } else lowerBoard->homeData(data);
         }
         memory->handleChannels();
         home->service();
     }
-    void fuzz() override { fuzzer.tick(); }
+    void fuzz() override { maintain(); }
     void updateSignals() override { memory->updateSignals(); }
     void drive() {
         dut.io_l2NodeId = 1; dut.io_homeNodeId = 8;
-        dut.io_flush = 0; dut.io_evt_valid = 0; dut.io_prefetchTask_valid = 0;
+        dut.io_flush = 0; dut.io_prefetchTask_valid = 0;
+        dut.io_evt_valid = requester->eventValid();
+        if (requester->eventValid()) {
+            const auto& f = requester->event();
+            dut.io_evt_bits_srcID = f.node; dut.io_evt_bits_tgtID = f.target; dut.io_evt_bits_txnID = f.txn;
+            dut.io_evt_bits_opcode = f.opcode; dut.io_evt_bits_addr = f.address;
+            dut.io_evt_bits_wayValid = 0; dut.io_evt_bits_way = 0; dut.io_evt_bits_traceTag = f.traceTag;
+        }
         dut.io_downSnp_valid = !lowerQueue.empty();
         if (!lowerQueue.empty()) {
             const auto& snp = lowerQueue.front();
@@ -382,9 +396,9 @@ public:
         if (requester->requestValid()) {
             const auto& f = requester->request();
             dut.io_req_bits_srcID = f.node; dut.io_req_bits_tgtID = f.target; dut.io_req_bits_txnID = f.txn;
-            dut.io_req_bits_opcode = f.opcode; dut.io_req_bits_addr = f.address; dut.io_req_bits_size = 6;
+            dut.io_req_bits_opcode = f.opcode; dut.io_req_bits_addr = f.address; dut.io_req_bits_size = f.size;
             dut.io_req_bits_tagAlias = 0; dut.io_req_bits_ns = 0; dut.io_req_bits_order = 0;
-            dut.io_req_bits_memAttr = 0; dut.io_req_bits_excl = 0; dut.io_req_bits_expCompData = 1;
+            dut.io_req_bits_memAttr = 0; dut.io_req_bits_excl = 0; dut.io_req_bits_expCompData = f.opcode == 2 || f.opcode == 3 || f.opcode == 4 || f.opcode == 16;
             dut.io_req_bits_expCompStash = 0; dut.io_req_bits_wayValid = 0; dut.io_req_bits_way = 0;
             dut.io_req_bits_traceTag = f.traceTag; dut.io_vaddr = f.address;
         }
@@ -435,19 +449,20 @@ int main(int argc, char** argv) {
     try {
         const unsigned seed = argc > 1 ? std::stoul(argv[1]) : 42;
         if (!seed) throw std::invalid_argument("seed must be nonzero");
-        const bool randomized = argc > 3 && std::string(argv[3]) == "random-read";
-        const bool lowerProfile = argc > 3 && std::string(argv[3]) == "lower-snoop";
-        const bool victimProfile = argc > 3 && std::string(argv[3]) == "victim";
+        const std::string profile = argc > 3 ? argv[3] : "configured";
+        TestScenario scenario;
+        if (profile == "configured") scenario = TestScenario::Configured;
+        else if (profile == "deterministic-read") scenario = TestScenario::DeterministicRead;
+        else if (profile == "random-read") scenario = TestScenario::RandomRead;
+        else if (profile == "lower-snoop") scenario = TestScenario::LowerSnoop;
+        else if (profile == "victim") scenario = TestScenario::Victim;
+        else if (profile == "node-actions") scenario = TestScenario::Actions;
+        else throw std::invalid_argument("unknown action fuzzer mode");
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);
-        auto config = LoadTestConfig([&](TLLocalConfig& config) {
-            config.seed = seed; config.coreCount = 1; config.masterCountPerCoreTLC = 1; config.masterCountPerCoreTLUL = randomized ? 3 : 1;
-            config.memoryStart = 0x1000;
-            config.memoryEnd = victimProfile ? compactchi::VictimProfile::memoryEnd : 0x2000;
-            config.memoryPortCount = 1;
-            config.memoryCycleUnit = 1; config.memoryReadLatency = 4; config.memoryWriteLatency = 4;
-            config.memoryReadDepth = 16; config.memoryWriteDepth = 8; config.maximumCycle = 10000;
-        });
+        const std::string ini = argc > 6 ? argv[6] : "tltest.ini";
+        auto config = LoadTestConfig([&](TLLocalConfig& config) { config.seed = seed; }, ini);
+        std::filesystem::copy_file(ini, output / "tltest.ini", std::filesystem::copy_options::overwrite_existing);
         VerilatedContext simulation;
         simulation.commandArgs(argc, argv);
         simulation.traceEverOn(true);
@@ -464,9 +479,9 @@ int main(int argc, char** argv) {
         dut.reset = 0;
         const std::string replay = argc > 4 && std::string(argv[4]) != "-" ? argv[4] : "";
         const bool mutation = argc > 5 && std::string(argv[5]) == "data-error";
-        DutAdapter adapter(dut, simulation, output, randomized, replay, mutation, lowerProfile, victimProfile);
+        DutAdapter adapter(dut, simulation, output, scenario, replay, mutation);
         TLSequencer sequencer;
-        sequencer.InitializeProtocol(config, adapter);
+        sequencer.Initialize(config, adapter);
         uint64_t cycle = 8;
         const uint64_t limit = config.maximumCycle ? config.maximumCycle : 10000;
         while (sequencer.IsAlive() && cycle < limit) {
@@ -483,7 +498,7 @@ int main(int argc, char** argv) {
         sequencer.Finalize();
         dut.final(); waveform.close();
         std::printf("profile=%s seed=%llu cycles=%llu independent_board=%s trace=%s\n",
-                    victimProfile ? "victim" : randomized ? "random-read" : lowerProfile ? "lower-snoop" : "deterministic-read", (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
+                    profile.c_str(), (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
         return passed && !sequencer.IsFailed() ? 0 : 1;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());

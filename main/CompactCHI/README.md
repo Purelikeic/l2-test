@@ -1,6 +1,57 @@
 # Compact CHI testing
 
-## Current binding and scoped victim adapter
+## Current configured Sequencer nodes and action scheduler
+
+Both protocols use the original TLLocalConfig/LoadTestConfig and tltest.ini schema.
+The native binding calls TLSequencer::Initialize(config, adapter). Sequencer
+constructs a configured per-core layout and asks the adapter to replace node
+implementations: TL-C -> coherent Type 1, TL-UL -> ReadOnce transient, one MMIO
+node per core -> ReadNoSnp/WriteNoSnp. Shared Compact wire IDs assign MMIO a
+non-overlapping region after cache-node IDs. AnserL2.cpp does not set node counts.
+
+NodeFuzzer is the only production Compact stimulus scheduler. It emits protocol-
+neutral TestActions; NodeAgent/Requester encode them. CFuzzer has no Compact
+branch and the former native ReadFuzzer is removed. Seed, startup, original ARI
+ranges/permutation/interval/target and stream parameters come from the same INI.
+Finite deterministic/random/lower-snoop/victim/node-actions are scheduler modes;
+INI mode.X can select deterministic_read, random_read, lower_snoop, victim or
+node_actions. Configured mode also supports original unified U/R/B policy with
+explicit full-overwrite intent and agent admission; conflicting persistent owners
+remain Deferred, never silently approximated. Rejections are separately recorded.
+
+Type 1 actions include ReadShared/ReadUnique, explicit full-line MakeUnique
+(overwrite after CompAck), clean Evict, dirty WriteBack, and three CMO classes.
+Combined WriteBack completion retains its data obligation. Transient/MMIO nodes
+do not acquire persistent ownership. A queued or granted second persistent owner
+is Deferred; ArchitecturalBoard independently checks it. Exclusive, Atomic and
+WriteUnique always return Illegal. Snoop targeting transient/MMIO is rejected.
+
+CMO and MMIO use existing Requester/ArchitecturalBoard/EbHome transport with
+independent intent/data snapshots. Device byte memory is separate from expected
+MMIO data; dirty cache copyback still commits through original MemoryAgent.
+DCT forward acknowledgment is now scheduled on a later cycle by the endpoint
+service. Quietness is still not proof of complete internal occupancy.
+
+`make tester-foundation` includes configured-node and protocol-neutral scheduler
+host checks. `make node-actions-test` covers permission overwrite, release/CMO
+and MMIO; `make configured-node-test` uses INI ARI/stream/unified modes. All finite
+profiles use `TLTEST_INI`, defaulting to this directory's config/tltest.ini fixture.
+Set that variable to an existing standard INI to vary topology without changing
+protocol adapter code. The caller's root tltest.ini is never overwritten.
+Topology, selected scenario, accepted actions and rejections are saved alongside
+canonical/VCD traces. The checker derives role IDs from the configured topology
+and verifies node counts against the exact input INI snapshot.
+
+A native typed-node scenario exposed Snoop-copy metadata being treated as an
+invalidating ReleaseData in the DUT. The scoped RTL repair preserves the received
+SC/UC client snapshot during Snoop copying, while real invalidating release still
+clears it. The independent CMO checker retains the client until actual invalidation.
+
+These are bounded node/profile checks. Complete ARI/unified architectural state,
+all concurrency/error/nested variants, internal occupancy and prefetch integration
+remain unfinished. Global-test stays guarded; no full global pass is published.
+
+## Historical binding and scoped victim adapter — before configured nodes
 
 AnserL2.cpp binds the only DUT, AnserL2, through original System LoadTestConfig,
 TLSequencer InitializeProtocol/Tick/Tock/Finalize, Fuzzer, boards and MemoryAgent.
