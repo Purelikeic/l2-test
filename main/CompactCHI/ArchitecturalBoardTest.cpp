@@ -16,10 +16,12 @@ public:
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
+static unsigned rejectedMutations = 0;
 static void reject(const std::function<void()>& operation) {
     bool failed = false;
     try { operation(); } catch (const std::runtime_error&) { failed = true; }
     require(failed, "scoreboard accepted a deliberately invalid observation");
+    ++rejectedMutations;
 }
 int main() {
     try {
@@ -67,7 +69,38 @@ int main() {
         board.compAck(3, 9, false);
         reject([&] { board.store(3, 0x1040, dirty); });
         require(board.idle(), "terminal scoreboard resources are not empty");
-        std::puts("ArchitecturalBoard: legal reads, dirty ownership, independent data and 14 mutation checks passed");
+        board.issue({2, 7}, compactchi::ReadClass::Unique, 0x1000, true);
+        board.data({2, 7}, 0, 55, 2, true, initial.data());
+        board.data({2, 7}, 1, 55, 2, true, initial.data() + 32);
+        board.compAck(2, 55, true);
+        require(board.state(0x1000).permission == compactchi::Permission::UD,
+                "UD ReadUnique replaced the requester's independently held dirty copy");
+        board.issueSnoop({2, 51}, 2, 0x1000, true);
+        reject([&] { board.snoopResponse({2, 51}, 1, true); });
+        reject([&] { board.snoopData({2, 51}, 0, 1, true, dirty.data()); });
+        reject([&] { board.snoopData({2, 51}, 0, 5, false, dirty.data()); });
+        reject([&] { board.snoopData({2, 51}, 0, 5, true, initial.data()); });
+        board.snoopData({2, 51}, 1, 5, true, dirty.data() + 32);
+        require(!board.idle() && board.state(0x1000).permission == compactchi::Permission::UD,
+                "Snoop committed before complete dirty data capture");
+        reject([&] { board.snoopData({2, 51}, 1, 5, true, dirty.data() + 32); });
+        board.snoopData({2, 51}, 0, 5, true, dirty.data());
+        require(board.idle() && board.state(0x1000).permission == compactchi::Permission::SC,
+                "dirty Shared Snoop did not commit the Shared node state");
+        reject([&] { board.store(2, 0x1000, dirty); });
+        board.issueSnoop({2, 52}, 3, 0x1000, false);
+        reject([&] { board.snoopResponse({2, 52}, 2, false); });
+        board.snoopResponse({2, 52}, 1, false);
+        board.issueSnoop({2, 53}, 0, 0x1000, false);
+        reject([&] { board.snoopData({2, 53}, 0, 0, false, dirty.data()); });
+        board.snoopResponse({2, 53}, 0, false);
+        board.issueSnoop({2, 54}, 1, 0x1000, false);
+        reject([&] { board.snoopData({2, 54}, 0, 0, false, dirty.data()); });
+        board.snoopResponse({2, 54}, 0, false);
+        require(board.idle() && board.state(0x1000).permission == compactchi::Permission::I,
+                "invalidating Snoop leaked node state or obligations");
+        std::printf("ArchitecturalBoard: legal reads, Compact Snoops, independent data and %u mutation checks passed\n",
+                    rejectedMutations);
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());

@@ -47,6 +47,8 @@ void ArchitecturalBoard::issue(RequestKey key, ReadClass request, uint64_t addre
     requestEntry->address = address;
     requestEntry->startCycle = context.cycle();
     requestEntry->traceTag = traceTag;
+    requestEntry->retainDirtyData = request == ReadClass::Unique && state.owner == key.node &&
+        state.permission == Permission::UD;
     std::copy_n(global.query(&context, address)->data->data, 64, requestEntry->expected.begin());
     pending.update(&context, key, requestEntry);
     lineOwners.emplace(address, key);
@@ -69,8 +71,13 @@ void ArchitecturalBoard::data(RequestKey key, unsigned dataId, unsigned dbid, un
     else if (entry->request == ReadClass::Shared)
         require(resp == 1 || resp == 2 || resp == 6, "ReadShared returned an illegal permission");
     else require(resp == 2 || resp == 6, "ReadUnique returned an illegal permission");
-    require(bytes != nullptr && std::equal(bytes, bytes + 32, entry->expected.begin() + dataId * 32),
-            "architectural read data mismatch");
+    require(bytes != nullptr, "architectural read data is absent");
+    // Compact guide 10.2: a Requester already holding UD must discard or merge
+    // stale ReadUnique data. Its independently held latest copy remains the
+    // architectural value; transport data does not overwrite that copy.
+    if (!entry->retainDirtyData)
+        require(std::equal(bytes, bytes + 32, entry->expected.begin() + dataId * 32),
+                "architectural read data mismatch");
     if (entry->request != ReadClass::Once && !entry->dbid)
         require(!acks.count({key.node, dbid}), "response reused a live node/DBID");
     entry->dbid = dbid;
@@ -88,7 +95,8 @@ void ArchitecturalBoard::data(RequestKey key, unsigned dataId, unsigned dbid, un
         } else {
             auto& state = nodeLine(entry->address);
             state.owner = key.node;
-            state.permission = resp == 1 ? Permission::SC : resp == 2 ? Permission::UC : Permission::UD;
+            state.permission = entry->retainDirtyData ? Permission::UD :
+                resp == 1 ? Permission::SC : resp == 2 ? Permission::UC : Permission::UD;
         }
     }
 }
@@ -117,7 +125,74 @@ void ArchitecturalBoard::store(unsigned node, uint64_t address, const LineData& 
     global.update(&context, address, entry);
     state.permission = Permission::UD;
 }
+void ArchitecturalBoard::issueSnoop(RequestKey key, unsigned opcode, uint64_t address, bool traceTag) {
+    require(key.node < nodeCount && opcode < 4 && !(address & 63) && global.haskey(address),
+            "invalid Compact Snoop identity, opcode or line");
+    require(!snoops.haskey(key) && !snoopOwners.count(address), "Snoop resource already owned");
+    const auto& state = nodeLine(address);
+    // This adapter models included persistent nodes; a targeted node must be
+    // either the sole owner or Invalid. Clean invalid-node replies need no data.
+    const bool owner = state.owner && *state.owner == key.node;
+    auto entry = std::make_shared<SnoopExpectation>();
+    entry->opcode = opcode;
+    entry->address = address;
+    entry->traceTag = traceTag;
+    entry->dirty = owner && state.permission == Permission::UD;
+    entry->before = owner ? state.permission : Permission::I;
+    std::copy_n(global.query(&context, address)->data->data, 64, entry->expected.begin());
+    snoops.update(&context, key, entry);
+    snoopOwners.emplace(address, key);
+}
+void ArchitecturalBoard::checkSnoop(const SnoopExpectation& entry, unsigned resp,
+                                  bool traceTag, bool withData) {
+    require(entry.traceTag == traceTag, "Snoop response TraceTag mismatch");
+    const unsigned state = resp & 3;
+    const bool passDirty = (resp & 4) != 0;
+    require(resp <= 6 && state != 3, "reserved Compact Snoop response state");
+    if (entry.before == Permission::I)
+        require(!withData && resp == 0, "Invalid snoopee returned data or valid permission");
+    if (entry.before == Permission::SC && entry.opcode == 3)
+        require(state != 2, "clean Snoop promoted Shared to Unique");
+    if (entry.opcode < 2) require(state == 0, "invalidating Snoop kept a valid node state");
+    if (entry.opcode == 2) require(state == 0 || state == 1, "shared Snoop kept Unique permission");
+    if (entry.opcode == 0) require(!withData && !passDirty, "discard Snoop returned data");
+    if (entry.dirty && entry.opcode != 0)
+        require(withData && passDirty, "dirty Snoop failed to return dirty responsibility and data");
+    else require(!passDirty, "clean Snoop fabricated dirty responsibility");
+}
+void ArchitecturalBoard::finishSnoop(RequestKey key, const SnoopExpectation& entry, unsigned resp) {
+    auto& state = nodeLine(entry.address);
+    // A probe of an Invalid identity must not erase another identity's owner.
+    if (state.owner && *state.owner == key.node) {
+        const unsigned base = resp & 3;
+        if (base == 0) state = {};
+        else state.permission = base == 1 ? Permission::SC : Permission::UC;
+    } else require((resp & 3) == 0, "Invalid snoopee acquired a line through Snoop response");
+    snoopOwners.erase(entry.address);
+    snoops.erase(&context, key);
+}
+void ArchitecturalBoard::snoopResponse(RequestKey key, unsigned resp, bool traceTag) {
+    require(snoops.haskey(key), "unknown node/Snoop TxnID");
+    auto entry = snoops.query(&context, key);
+    require(entry->beats == 0, "Snoop mixed a response with partial data");
+    checkSnoop(*entry, resp, traceTag, false);
+    finishSnoop(key, *entry, resp);
+}
+void ArchitecturalBoard::snoopData(RequestKey key, unsigned dataId, unsigned resp,
+                                 bool traceTag, const uint8_t* bytes) {
+    require(snoops.haskey(key), "unknown node/Snoop data TxnID");
+    auto entry = snoops.query(&context, key);
+    require(dataId < 2 && !(entry->beats & (1U << dataId)), "duplicate or invalid Snoop data beat");
+    checkSnoop(*entry, resp, traceTag, true);
+    require(!entry->resp || *entry->resp == resp, "Snoop response changed across data beats");
+    require(bytes && std::equal(bytes, bytes + 32, entry->expected.begin() + dataId * 32),
+            "Snoop did not return the independently expected latest data");
+    entry->resp = resp;
+    entry->beats |= 1U << dataId;
+    if (entry->beats == 3) finishSnoop(key, *entry, resp);
+}
 bool ArchitecturalBoard::idle() {
-    return pending.get().empty() && acks.empty() && lineOwners.empty();
+    return pending.get().empty() && acks.empty() && lineOwners.empty() &&
+           snoops.get().empty() && snoopOwners.empty();
 }
 } // namespace compactchi
