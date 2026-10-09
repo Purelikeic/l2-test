@@ -8,7 +8,8 @@ import sys
 root = Path(sys.argv[1])
 randomized = sys.argv[2:] == ["random-read"]
 lower_profile = sys.argv[2:] == ["lower-snoop"]
-profile = "random-read" if randomized else "lower-snoop" if lower_profile else "deterministic-read"
+victim_profile = sys.argv[2:] == ["victim"]
+profile = "victim" if victim_profile else "random-read" if randomized else "lower-snoop" if lower_profile else "deterministic-read"
 scopes = runpy.run_path(str(Path(__file__).with_name("profile_scopes.py")))["SCOPES"]
 rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
 seed = rows[0]["seed"]
@@ -46,7 +47,10 @@ for row in events:
         beat = row["data_id"]
         assert beat in (0, 1) and beat not in beats.setdefault(key, set())
         beats[key].add(beat)
-        expected = bytes(((req["address"] >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
+        expected = bytearray(((req["address"] >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
+        if victim_profile and req["node"] == 0 and req["address"] == 0x1000:
+            expected[0] ^= 0xa5
+            expected[63] ^= 0x5a
         assert bytes.fromhex(row["data"]) == expected[beat * 32:(beat + 1) * 32]
         assert row["trace_tag"] == req["trace_tag"] and row["resp_err"] == 0
         if req["opcode"] == 3:
@@ -62,7 +66,7 @@ for row in events:
     elif direction == "cchi_rx_rsp" and row["opcode"] == 0:
         key = acks.pop((row["node"], row["txn_id"]))
         assert beats[key] == {0, 1}
-expected_requests = 96 if randomized else 5 if lower_profile else 4
+expected_requests = 10 if victim_profile else 96 if randomized else 5 if lower_profile else 4
 assert len(requests) == expected_requests and len(beats) == expected_requests and not acks
 if randomized:
     assert {key[0] for key in requests} == {0, 1, 2, 3}
@@ -71,9 +75,13 @@ if randomized:
         else: assert request["opcode"] == 16 and request["address"] == 0x1000 + (node - 1) * 64
 assert all(b == {0, 1} for b in beats.values())
 # Assert that intended separated completion and retry stimulus actually fired.
-assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 11 and r["handshake"] for r in events)
-assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 3 and r["handshake"] for r in events)
-assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 7 and r["handshake"] for r in events)
+if not victim_profile:
+    assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 11 and r["handshake"] for r in events)
+    assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 3 and r["handshake"] for r in events)
+    assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 7 and r["handshake"] for r in events)
+victim_evidence = None
+if victim_profile:
+    victim_evidence = runpy.run_path(str(Path(__file__).with_name("check-victim-events.py")))["check"](events, seed)
 
 if lower_profile:
     lower_requests = [r for r in events if r["direction"] == "chi_rx_snp" and r["handshake"]]
@@ -169,6 +177,8 @@ evidence = {"profile": profile, "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
             "scope": scopes[profile]}
+if victim_evidence is not None:
+    evidence["victimEvidence"] = victim_evidence
 if latency:
     samples = sorted(latency.values())
     evidence["latencySummaryCycles"] = {"min": samples[0], "max": samples[-1],

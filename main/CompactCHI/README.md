@@ -1,6 +1,51 @@
 # Compact CHI testing
 
-## Verified tester foundations — DUT binding remains unfinished
+## Current binding and scoped victim adapter
+
+AnserL2.cpp binds the only DUT, AnserL2, through original System LoadTestConfig,
+TLSequencer InitializeProtocol/Tick/Tock/Finalize, Fuzzer, boards and MemoryAgent.
+The original framework is connected; the historical frontend claims below are
+archived and do not describe current architectural acceptance.
+
+From the AnserL2 parent, `make tester-foundation` runs ten host-only gates,
+including the independent victim reference model and eight rejected mutations.
+It does not run a second DUT. Existing deterministic-read, random-read and
+lower-snoop profiles remain finite scenario evidence.
+
+`make victim-test SEEDS="42 7 12345 17 9999"` elaborates the default four-slice,
+128-set, four-way DUT and runs fixed independent replacement vectors on original
+Home memory. The profile issues ten serialized reads: fill A..H at a same-set
+stride, modify the unique requester copy of A, reload evicted A from memory, then
+hit resident F. It checks five primary victims A..E, dirty-client recall,
+WriteBackFull, both clean WriteEvictOrEvict completion branches, exact copyback
+data and real MemoryAgent commitment. Root BOP auxiliary traffic occupies the
+adjacent slice and retains a separate clean-traffic boundary.
+
+VictimProfile.hpp checks planned request/victim order and classification;
+EbHome supplies existing independent data/DBID/CompAck and memory checks.
+CopyBackWrData is routed to EbHome, while Snoop/DCT data retain LowerSnoopBoard.
+check-victim-events.py independently checks fixed trace vectors, dirty data,
+branch obligations and eight invalid trace observations. check-dut-trace.py
+retains the existing exact VCD/offer-stability check for all directions.
+
+Records are in ignored parent build/victim-acceptance.json and
+build/compactchi-victim/<seed>/. Source, tester, foundation-gate and runner
+fingerprints must remain unchanged during acceptance. The runner fingerprint
+includes its own source, source/foundation helper scripts and parent Makefile;
+the tester fingerprint includes native source, headers and checkers.
+
+This is limited replacement evidence: no CMO/MMIO/ARI/full concurrent topology,
+complete internal resource/residency model, PSEL/leader sweep or new PBOP/VBOP
+algorithm acceptance. Twenty quiet cycles are only a settle condition. Current
+CMO component/Slice checks remain with AnserL2 ChiselTests. Full architectural
+scoreboard and independent forward-node/internal occupancy exits remain pending.
+Global-test remains an explicit rejection guard; these profiles never publish
+full global acceptance. Compact WriteUnique, Exclusive, Atomic, ECC and early
+Hint behavior are outside this adapter.
+
+## Historical foundations/frontend notes — superseded by current binding
+
+### Verified tester foundations — historical checkpoint
 
 The final target must use AnserL2 as its only DUT and the original tester
 System/Sequencer/MemoryAgent/boards/fuzzer lifecycle. The legacy frontend below

@@ -367,6 +367,13 @@ compactchi-lower-snoop-test:
 		-o $(COMPACTCHI_CHECK_DIR)/lower-snoop-test
 	$(COMPACTCHI_CHECK_DIR)/lower-snoop-test
 
+.PHONY: compactchi-victim-test
+compactchi-victim-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/VictimProfileTest.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/victim-profile-test
+	$(COMPACTCHI_CHECK_DIR)/victim-profile-test
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	@mkdir -p $(COMPACTCHI_OBJ_DIR)
