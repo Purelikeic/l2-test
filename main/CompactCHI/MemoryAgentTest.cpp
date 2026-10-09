@@ -24,6 +24,10 @@ void exercise(bool outOfOrder) {
     axi_agent::MemoryAgent memory(&config, 42, &cycles, 0);
     axi_agent::Bundle<BEATSIZE_MEMORY> port{};
     memory.connect(&port);
+    require(memory.sysSeed() == 42, "MemoryAgent does not report the configured seed");
+    std::mt19937_64 expectedRandom(42);
+    for (unsigned i = 0; i < 8; ++i)
+        require(memory.rand64() == expectedRandom(), "MemoryAgent random sequence ignores the seed");
     memory.update_signal();
     auto tick = [&]() {
         memory.handle_channel();
@@ -123,7 +127,18 @@ int main() {
     try {
         exercise(false);
         exercise(true);
-        std::puts("MemoryAgent: latency, OOO, masked writes, stalled responses and 64-bit cycle passed");
+        TLLocalConfig cfg{};
+        cfg.memoryStart = 0;
+        cfg.memoryEnd = 64;
+        uint64_t cycles = 0;
+        axi_agent::MemoryAgent a(&cfg, 7, &cycles, 0);
+        std::array<uint8_t, 64> backing{};
+        axi_agent::MemoryAgent b(&cfg, 7, &cycles, 0, backing.data());
+        axi_agent::MemoryAgent c(&cfg, 17, &cycles, 0);
+        const uint64_t first = a.rand64();
+        require(first == b.rand64() && first != c.rand64(), "MemoryAgent seed reproducibility mismatch");
+        require(b.sysSeed() == 7, "external-backed MemoryAgent lost its seed");
+        std::puts("MemoryAgent: latency, OOO, masked writes, stalled responses, seed and 64-bit cycle passed");
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());

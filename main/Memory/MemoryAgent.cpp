@@ -104,6 +104,7 @@ namespace axi_agent {
     MemoryAgent::MemoryAgent(TLLocalConfig* cfg, unsigned int seed, uint64_t* cycles, int id) noexcept
         : seed  (seed)
         , id    (id)
+        , rand  (seed)
     {
         this->cfg = cfg;
         this->pmem = new uint8_t[size()];
@@ -117,6 +118,7 @@ namespace axi_agent {
     MemoryAgent::MemoryAgent(TLLocalConfig* cfg, unsigned int seed, uint64_t* cycles, int id, uint8_t* pmem) noexcept
         : seed  (seed)
         , id    (id)
+        , rand  (seed)
     {
         this->cfg = cfg;
         this->pmem = pmem;
@@ -148,7 +150,7 @@ namespace axi_agent {
 
     unsigned int MemoryAgent::sysSeed() const noexcept
     {
-        return 0;
+        return seed;
     }
 
     const TLLocalConfig& MemoryAgent::config() const noexcept
