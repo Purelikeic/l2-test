@@ -48,6 +48,11 @@ void CanonicalTrace::record(const CanonicalEvent& event) {
     field(jsonl, "owner", event.owner);
     field(jsonl, "data_source", event.dataSource);
     field(jsonl, "prefetch_source", event.prefetchSource);
+    field(jsonl, "forward_state", event.forwardState);
+    field(jsonl, "home_node", event.homeNode);
+    field(jsonl, "forward_node", event.forwardNode);
+    field(jsonl, "forward_txn", event.forwardTxn);
+    field(jsonl, "byte_enable", event.byteEnable);
     jsonl << ",\"dirty\":";
     if (event.dirty) jsonl << (*event.dirty ? "true" : "false"); else jsonl << "null";
     jsonl << ",\"data\":";

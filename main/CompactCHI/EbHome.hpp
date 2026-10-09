@@ -58,7 +58,7 @@ class EbHome {
         unsigned dbid, ackTarget;
         bool write, copyback, needAck, rspAccepted = false, memoryPending = false;
         unsigned sentMask = 0, receivedMask = 0;
-        bool retryPending = false, retryDelivered = false;
+        bool retryPending = false, retryDelivered = false, homeMemoryOnly = false;
         chi_agent::Line expected{}, received{};
     };
     enum class RspKind { Completion, Retry, Credit };
@@ -99,6 +99,8 @@ public:
     void dataAccepted();
     void receiveCompAck(unsigned source, unsigned target, unsigned dbid, bool traceTag);
     void receiveCopyback(const EbData& flit);
+    bool snoopCommitReady() const { return contexts.size() < capacity && memory.ready(true); }
+    void commitSnoopData(uint64_t address, const chi_agent::Line& data);
     bool idle() const;
 };
 } // namespace compactchi

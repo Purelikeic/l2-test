@@ -245,6 +245,15 @@ int main() {
         home.dataAccepted();
         home.receiveCompAck(1, 8, finalDbid, false);
         require(home.idle(), "fungible/outliving credit obligations leaked");
+        expected(ctx, board, 0x1040, dirty);
+        auto wrongSnoop = dirty;
+        wrongSnoop[0] ^= 1;
+        reject([&] { home.commitSnoopData(0x1040, wrongSnoop); });
+        home.commitSnoopData(0x1040, dirty);
+        require(!home.idle(), "Home retired dirty Snoop data before memory commitment");
+        drainMemory();
+        for (unsigned i = 0; i < 64; ++i)
+            require(memory.backend().access(0x1040 + i) == dirty[i], "Home Snoop responsibility did not reach memory");
         std::printf("E.b Home: completion/copyback, issuer/type Retry/P-Credit and %u mutations passed\n",
                     rejected);
         return 0;

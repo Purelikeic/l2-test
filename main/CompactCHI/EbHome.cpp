@@ -117,8 +117,10 @@ void EbHome::enqueueCompletion(unsigned owner) {
 }
 void EbHome::finish(unsigned owner) {
     const auto& ctx = contexts.at(owner);
-    transactions.erase({ctx.request.source, ctx.request.txn, ctx.write});
-    dbids.erase(ctx.dbid);
+    if (!ctx.homeMemoryOnly) {
+        transactions.erase({ctx.request.source, ctx.request.txn, ctx.write});
+        dbids.erase(ctx.dbid);
+    }
     contexts.erase(owner);
 }
 void EbHome::service() {
@@ -227,6 +229,27 @@ void EbHome::receiveCopyback(const EbData& flit) {
             "copyback differs from the independent architectural data");
     std::copy(flit.data.begin(), flit.data.end(), ctx.received.begin() + beat * 32);
     ctx.receivedMask |= 1U << beat;
+}
+void EbHome::commitSnoopData(uint64_t address, const chi_agent::Line& data) {
+    require(snoopCommitReady() && !(address & 63) && global.haskey(address),
+            "Snoop dirty commitment lacks memory capacity or expected data");
+    const auto golden = global.query(&local, address);
+    require(golden->status == Global_SBEntry::SB_VALID && golden->data &&
+            std::equal(data.begin(), data.end(), golden->data->data),
+            "Snoop dirty commitment differs from independent architectural data");
+    const unsigned owner = nextOwner++;
+    require(!contexts.count(owner), "Snoop memory commitment reused a live owner");
+    // A Home-owned memory write, not a fabricated DUT CHI request. Its memory
+    // completion is retained by this context until the backend actually commits.
+    EbRequest request{node, node, owner, 0x17, address, false, false};
+    Context ctx{request, {}, 0, node, true, true, false};
+    ctx.rspAccepted = true;
+    ctx.homeMemoryOnly = true;
+    ctx.receivedMask = 3;
+    ctx.received = data;
+    ctx.memoryPending = true;
+    contexts.emplace(owner, ctx);
+    memory.submit({owner, address, true, data});
 }
 bool EbHome::idle() const {
     return contexts.empty() && transactions.empty() && dbids.empty() && credits.empty() &&

@@ -375,6 +375,7 @@ compactchi-build:
 		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp \
 		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
 		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \
+		$(CURDIR)/main/CompactCHI/LowerSnoopBoard.cpp \
 		$(CURDIR)/main/Memory/CHIHomeMemory.cpp $(CURDIR)/main/Memory/MemoryAgent.cpp \
 		$(CURDIR)/main/Sequencer/TLSequencer.cpp $(CURDIR)/main/Sequencer/ProtocolSequencer.cpp \
 		$(CURDIR)/main/System/TLConfig.cpp \

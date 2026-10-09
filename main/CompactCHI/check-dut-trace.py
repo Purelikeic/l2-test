@@ -6,6 +6,7 @@ import sys
 
 root = Path(sys.argv[1])
 randomized = sys.argv[2:] == ["random-read"]
+lower_profile = sys.argv[2:] == ["lower-snoop"]
 rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
 seed = rows[0]["seed"]
 events = rows[1:]
@@ -57,7 +58,7 @@ for row in events:
     elif direction == "cchi_rx_rsp" and row["opcode"] == 0:
         key = acks.pop((row["node"], row["txn_id"]))
         assert beats[key] == {0, 1}
-expected_requests = 96 if randomized else 4
+expected_requests = 96 if randomized else 5 if lower_profile else 4
 assert len(requests) == expected_requests and len(beats) == expected_requests and not acks
 if randomized:
     assert {key[0] for key in requests} == {0, 1, 2, 3}
@@ -69,6 +70,24 @@ assert all(b == {0, 1} for b in beats.values())
 assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 11 and r["handshake"] for r in events)
 assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 3 and r["handshake"] for r in events)
 assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 7 and r["handshake"] for r in events)
+
+if lower_profile:
+    lower_requests = [r for r in events if r["direction"] == "chi_rx_snp" and r["handshake"]]
+    assert [(r["txn_id"], r["opcode"]) for r in lower_requests] == [(2048, 1), (2049, 23)]
+    dirty = bytearray(((0x1040 >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
+    dirty[0] ^= 0xa5
+    home_data = [r for r in events if r["direction"] == "chi_tx_dat" and r["target"] == 8 and r["handshake"]]
+    dct_data = [r for r in events if r["direction"] == "chi_tx_dat" and r["target"] == 12 and r["handshake"]]
+    assert len(home_data) == len(dct_data) == 2
+    for records, txn, opcode, resp in ((home_data, 2048, 1, 5), (dct_data, 2500, 4, 2)):
+        assert {r["data_id"] for r in records} == {0, 2}
+        for row in records:
+            assert row["txn_id"] == txn and row["opcode"] == opcode and row["resp"] == resp
+            beat = row["data_id"] // 2
+            assert bytes.fromhex(row["data"]) == dirty[beat * 32:(beat + 1) * 32]
+    assert all(r["dbid"] == 2049 and r["home_node"] == 8 for r in dct_data)
+    forwarded = [r for r in events if r["direction"] == "chi_tx_rsp" and r["txn_id"] == 2049 and r["handshake"]]
+    assert len(forwarded) == 1 and forwarded[0]["opcode"] == 9 and forwarded[0]["resp"] == 0 and forwarded[0]["forward_state"] == 2
 
 ports = {
     "cchi_rx_req": "req", "cchi_rx_evt": "evt", "cchi_rx_rsp": "upRspIn", "cchi_rx_dat": "upDatIn",
@@ -94,7 +113,9 @@ def check_time():
                     prefix + "_bits_txnID": row["txn_id"], prefix + "_bits_srcID": row["node"],
                     prefix + "_bits_opcode": row["opcode"]}
         for field, suffix in (("dbid", "dbID"), ("data_id", "dataID"), ("resp", "resp"),
-                              ("resp_err", "respErr"), ("data_source", "dataSource")):
+                              ("resp_err", "respErr"), ("data_source", "dataSource"),
+                              ("forward_state", "fwdState"), ("home_node", "homeNID"),
+                              ("forward_node", "fwdNID"), ("forward_txn", "fwdTxnID"), ("byte_enable", "byteEnable")):
             if row[field] is not None:
                 expected[prefix + "_bits_" + suffix] = row[field]
         if prefix + "_bits_tgtID" in symbols:
@@ -139,7 +160,7 @@ with (root / "waveform.vcd").open() as waveform:
             values[fields[1]] = int(value[1:], 2) if not any(c in value.lower() for c in "xz") else None
     check_time()
 assert not by_time and checked == len(events)
-evidence = {"profile": "random-read" if randomized else "deterministic-read", "seed": seed,
+evidence = {"profile": "random-read" if randomized else "lower-snoop" if lower_profile else "deterministic-read", "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
             "scope": "limited normal read/upgrade profile; no full alignment claim"}

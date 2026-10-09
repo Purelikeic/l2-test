@@ -23,6 +23,8 @@ struct CanonicalEvent {
     std::optional<uint64_t> address;
     std::optional<unsigned> dbid, dataId, resp, respErr;
     std::optional<unsigned> beforeState, afterState, owner, dataSource, prefetchSource;
+    std::optional<unsigned> forwardState, homeNode, forwardNode, forwardTxn;
+    std::optional<uint32_t> byteEnable;
     std::optional<bool> dirty;
     std::optional<std::array<uint8_t, 32>> data;
 };

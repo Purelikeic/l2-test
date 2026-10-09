@@ -6,6 +6,7 @@
 #include "../Events/TLSystemEvent.hpp"
 #include "Requester.hpp"
 #include "EbHome.hpp"
+#include "LowerSnoopBoard.hpp"
 #include "CanonicalTrace.hpp"
 #include <algorithm>
 #include <filesystem>
@@ -23,6 +24,11 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
     std::unique_ptr<compactchi::Requester> requester;
     std::unique_ptr<chi_agent::HomeMemory> memory;
     std::unique_ptr<compactchi::EbHome> home;
+    std::unique_ptr<compactchi::LowerSnoopBoard> lowerBoard;
+    std::deque<compactchi::LowerSnoop> lowerQueue;
+    bool lowerProfile;
+    unsigned lowerPhase = 0;
+    compactchi::LineData dirtyLine{};
     std::unique_ptr<compactchi::CanonicalTrace> trace;
     std::mt19937 random, trafficRandom;
     bool randomized;
@@ -68,6 +74,18 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
         event.resp = resp;
         event.respErr = error;
         if (channel == compactchi::Channel::CchiTxDat) event.dataSource = dut.io_upDat_bits_dataSource;
+        if (channel == compactchi::Channel::CchiRxDat) event.byteEnable = dut.io_upDatIn_bits_byteEnable;
+        if (channel == compactchi::Channel::ChiTxDat) {
+            event.forwardState = dut.io_downTxDat_bits_fwdState;
+            event.homeNode = dut.io_downTxDat_bits_homeNID;
+            event.byteEnable = dut.io_downTxDat_bits_byteEnable;
+        }
+        if (channel == compactchi::Channel::ChiTxRsp) event.forwardState = dut.io_downTxRsp_bits_fwdState;
+        if (channel == compactchi::Channel::ChiRxDat) event.homeNode = dut.io_downDat_bits_homeNID;
+        if (channel == compactchi::Channel::ChiRxSnp) {
+            event.forwardNode = dut.io_downSnp_bits_fwdNID;
+            event.forwardTxn = dut.io_downSnp_bits_fwdTxnID;
+        }
         if (data) {
             event.data = std::array<uint8_t, 32>{};
             for (unsigned byte = 0; byte < 32; ++byte)
@@ -79,9 +97,9 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
         // First deterministic profile: distinct transient/coherent identities,
         // one persistent client, known lines, and serialized read obligations.
         // This is not yet an N-node random transaction generator.
-        static constexpr unsigned opcodes[] = {3, 4, 16, 3};
-        static constexpr unsigned nodes[] = {0, 1, 1, 0};
-        static constexpr uint64_t addresses[] = {0x1000, 0x1040, 0x1040, 0x1040};
+        static constexpr unsigned opcodes[] = {3, 4, 16, 3, 16};
+        static constexpr unsigned nodes[] = {0, 1, 1, 0, 1};
+        static constexpr uint64_t addresses[] = {0x1000, 0x1040, 0x1040, 0x1040, 0x1040};
         if (issued < limitRequests && requester->idle() && board->idle() && home->idle()) {
             unsigned source, opcode;
             uint64_t address;
@@ -106,7 +124,39 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
             requester->enqueue({source, 1, txn, opcode, address, tag});
             ++issued;
         }
-        if (issued == limitRequests && requester->idle() && board->idle() && home->idle() &&
+        if (lowerProfile && issued == limitRequests && requester->idle() && board->idle() && home->idle()) {
+            if (lowerPhase == 0) {
+                for (unsigned i = 0; i < 64; ++i) dirtyLine[i] = uint8_t((0x1040 >> 6) ^ (i * 17) ^ cfg->seed);
+                dirtyLine[0] ^= 0xa5;
+                requester->store(1, 0x1040, dirtyLine);
+                const compactchi::LowerSnoop snoop{2048, 1, 0x1040, false, false};
+                lowerBoard->issue(snoop, compactchi::Permission::UD);
+                lowerQueue.push_back(snoop);
+                lowerPhase = 1;
+            } else if (lowerPhase == 1 && lowerBoard->complete(2048) && home->snoopCommitReady()) {
+                const auto result = lowerBoard->retire(2048);
+                if (result.dutAfter != compactchi::Permission::SC || result.dirtySink != compactchi::DirtySink::Home)
+                    throw std::runtime_error("dirty lower Snoop responsibility mismatch");
+                home->commitSnoopData(0x1040, result.latest);
+                lowerPhase = 2;
+            } else if (lowerPhase == 2) {
+                for (unsigned i = 0; i < 64; ++i)
+                    if (memory->backend().access(0x1040 + i) != dirtyLine[i])
+                        throw std::runtime_error("dirty Snoop data did not commit to Home memory");
+                const compactchi::LowerSnoop snoop{2049, 0x17, 0x1040, false, false, 12, 2500};
+                lowerBoard->issue(snoop, compactchi::Permission::SC);
+                lowerQueue.push_back(snoop);
+                lowerPhase = 3;
+            } else if (lowerPhase == 3 && lowerBoard->complete(2049)) {
+                const auto result = lowerBoard->retire(2049);
+                if (result.dutAfter != compactchi::Permission::I || result.forwardAfter != compactchi::Permission::UC ||
+                    result.dirtySink != compactchi::DirtySink::None)
+                    throw std::runtime_error("clean UniqueFwd state mismatch");
+                lowerPhase = 4;
+            }
+        }
+        if (issued == limitRequests && (!lowerProfile || lowerPhase == 4) &&
+            requester->idle() && board->idle() && home->idle() && lowerBoard->idle() &&
             !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
         else quiet = 0;
         if (quiet == 20) {
@@ -116,9 +166,9 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
     }
 public:
     DutAdapter(VL2Cache& dut, VerilatedContext& simulation, const std::filesystem::path& output, bool randomized,
-               const std::string& replayPath, bool mutateData)
-        : dut(dut), simulation(simulation), randomized(randomized), mutateData(mutateData),
-          limitRequests(randomized ? 96 : 4), output(output) {
+               const std::string& replayPath, bool mutateData, bool lowerProfile)
+        : dut(dut), simulation(simulation), lowerProfile(lowerProfile), randomized(randomized), mutateData(mutateData),
+          limitRequests(randomized ? 96 : lowerProfile ? 5 : 4), output(output) {
         if (!replayPath.empty()) {
             std::ifstream input(replayPath);
             if (!input) throw std::invalid_argument("cannot open stimulus replay file");
@@ -154,6 +204,7 @@ public:
         requester = std::make_unique<compactchi::Requester>(*board, 1);
         memory = std::make_unique<chi_agent::HomeMemory>(config, cycles, backend, memoryPort);
         home = std::make_unique<compactchi::EbHome>(*memory, *this, global);
+        lowerBoard = std::make_unique<compactchi::LowerSnoopBoard>(*this, global);
         trace = std::make_unique<compactchi::CanonicalTrace>(output / "canonical", config.seed);
         for (uint64_t address = 0x1000; address < 0x2000; address += 64) {
             compactchi::LineData bytes{};
@@ -226,6 +277,7 @@ public:
         if (dut.io_upSnp_valid && dut.io_upSnp_ready)
             requester->receiveSnoop({dut.io_upSnp_bits_srcID, dut.io_upSnp_bits_tgtID, dut.io_upSnp_bits_txnID,
                 dut.io_upSnp_bits_opcode, uint64_t(dut.io_upSnp_bits_addr) << 3, bool(dut.io_upSnp_bits_traceTag)});
+        if (dut.io_downSnp_valid && dut.io_downSnp_ready) lowerQueue.pop_front();
         if (dut.io_upRsp_valid) throw std::runtime_error("unsupported no-data completion in the initial read profile");
         if (dut.io_downReq_valid && dut.io_downReq_ready) {
             compactchi::HomePlan plan;
@@ -239,11 +291,32 @@ public:
             home->accept(downRequest(), plan);
         }
         if (dut.io_downTxRsp_valid && dut.io_downTxRsp_ready) {
-            if (dut.io_downTxRsp_bits_opcode != 2) throw std::runtime_error("unsupported lower Snoop response in initial read profile");
-            home->receiveCompAck(dut.io_downTxRsp_bits_srcID, dut.io_downTxRsp_bits_tgtID,
-                dut.io_downTxRsp_bits_txnID, dut.io_downTxRsp_bits_traceTag);
+            if (dut.io_downTxRsp_bits_opcode == 2)
+                home->receiveCompAck(dut.io_downTxRsp_bits_srcID, dut.io_downTxRsp_bits_tgtID,
+                    dut.io_downTxRsp_bits_txnID, dut.io_downTxRsp_bits_traceTag);
+            else {
+                compactchi::EbResponse response{dut.io_downTxRsp_bits_srcID, dut.io_downTxRsp_bits_tgtID,
+                    dut.io_downTxRsp_bits_txnID, dut.io_downTxRsp_bits_opcode, dut.io_downTxRsp_bits_dbID,
+                    dut.io_downTxRsp_bits_resp, bool(dut.io_downTxRsp_bits_traceTag)};
+                response.fwdState = dut.io_downTxRsp_bits_fwdState;
+                response.respErr = dut.io_downTxRsp_bits_respErr;
+                lowerBoard->response(response);
+            }
         }
-        if (dut.io_downTxDat_valid) throw std::runtime_error("unexpected lower copyback in initial read profile");
+        if (dut.io_downTxDat_valid && dut.io_downTxDat_ready) {
+            compactchi::EbData data{dut.io_downTxDat_bits_srcID, dut.io_downTxDat_bits_tgtID,
+                dut.io_downTxDat_bits_txnID, dut.io_downTxDat_bits_opcode, dut.io_downTxDat_bits_dbID,
+                dut.io_downTxDat_bits_homeNID, dut.io_downTxDat_bits_dataID, dut.io_downTxDat_bits_resp,
+                bool(dut.io_downTxDat_bits_traceTag)};
+            data.fwdState = dut.io_downTxDat_bits_fwdState;
+            data.respErr = dut.io_downTxDat_bits_respErr;
+            data.byteEnable = dut.io_downTxDat_bits_byteEnable;
+            for (unsigned b = 0; b < 32; ++b) data.data[b] = uint8_t(dut.io_downTxDat_bits_data[b / 4] >> ((b % 4) * 8));
+            if (data.target == 12) {
+                lowerBoard->forwardData(data);
+                if (data.dataId == 2) lowerBoard->forwardCompAck(12, 8, data.dbid, data.traceTag);
+            } else lowerBoard->homeData(data);
+        }
         memory->handleChannels();
         home->service();
     }
@@ -251,7 +324,16 @@ public:
     void updateSignals() override { memory->updateSignals(); }
     void drive() {
         dut.io_l2NodeId = 1; dut.io_homeNodeId = 8;
-        dut.io_flush = 0; dut.io_evt_valid = 0; dut.io_prefetchTask_valid = 0; dut.io_downSnp_valid = 0;
+        dut.io_flush = 0; dut.io_evt_valid = 0; dut.io_prefetchTask_valid = 0;
+        dut.io_downSnp_valid = !lowerQueue.empty();
+        if (!lowerQueue.empty()) {
+            const auto& snp = lowerQueue.front();
+            dut.io_downSnp_bits_srcID = 8; dut.io_downSnp_bits_txnID = snp.txn;
+            dut.io_downSnp_bits_opcode = snp.opcode; dut.io_downSnp_bits_addr = snp.address >> 3;
+            dut.io_downSnp_bits_retToSrc = snp.retToSrc; dut.io_downSnp_bits_traceTag = snp.traceTag;
+            dut.io_downSnp_bits_fwdNID = snp.forwardNode; dut.io_downSnp_bits_fwdTxnID = snp.forwardTxn;
+            dut.io_downSnp_bits_ns = 0;
+        }
         dut.io_upDatIn_valid = requester->dataValid();
         if (requester->dataValid()) {
             const auto& f = requester->data();
@@ -305,7 +387,7 @@ public:
         }
         dut.io_upDat_ready = random() % 4 != 0; dut.io_upRsp_ready = 1;
         dut.io_upSnp_ready = requester->snoopReady(); dut.io_downTxRsp_ready = random() % 4 != 0;
-        dut.io_downTxDat_ready = 1;
+        dut.io_downTxDat_ready = random() % 4 != 0;
         dut.io_downReq_ready = 0;
         dut.eval();
         dut.io_downReq_ready = home->requestReady(downRequest());
@@ -314,7 +396,7 @@ public:
     void finalize() override {
         if (successful && (!requester->idle() || !board->idle() || !home->idle()))
             throw std::runtime_error("final DUT profile resources did not drain");
-        trace.reset(); home.reset(); memory.reset(); requester.reset(); board.reset();
+        trace.reset(); lowerBoard.reset(); home.reset(); memory.reset(); requester.reset(); board.reset();
     }
 };
 }
@@ -324,6 +406,7 @@ int main(int argc, char** argv) {
         const unsigned seed = argc > 1 ? std::stoul(argv[1]) : 42;
         if (!seed) throw std::invalid_argument("seed must be nonzero");
         const bool randomized = argc > 3 && std::string(argv[3]) == "random-read";
+        const bool lowerProfile = argc > 3 && std::string(argv[3]) == "lower-snoop";
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);
         auto config = LoadTestConfig([&](TLLocalConfig& config) {
@@ -348,7 +431,7 @@ int main(int argc, char** argv) {
         dut.reset = 0;
         const std::string replay = argc > 4 && std::string(argv[4]) != "-" ? argv[4] : "";
         const bool mutation = argc > 5 && std::string(argv[5]) == "data-error";
-        DutAdapter adapter(dut, simulation, output, randomized, replay, mutation);
+        DutAdapter adapter(dut, simulation, output, randomized, replay, mutation, lowerProfile);
         TLSequencer sequencer;
         sequencer.InitializeProtocol(config, adapter);
         uint64_t cycle = 8;
@@ -367,7 +450,7 @@ int main(int argc, char** argv) {
         sequencer.Finalize();
         dut.final(); waveform.close();
         std::printf("profile=%s seed=%llu cycles=%llu independent_board=%s trace=%s\n",
-                    randomized ? "random-read" : "deterministic-read", (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
+                    randomized ? "random-read" : lowerProfile ? "lower-snoop" : "deterministic-read", (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
         return passed && !sequencer.IsFailed() ? 0 : 1;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());
