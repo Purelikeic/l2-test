@@ -11,6 +11,7 @@ rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().spli
 seed = rows[0]["seed"]
 events = rows[1:]
 assert all(r["sim_time"] == 2 * r["cycle"] for r in events)
+assert {r["trace_tag"] for r in events if r["direction"] == "cchi_rx_req"} == {False, True}
 assert [r["cycle"] for r in events] == sorted(r["cycle"] for r in events)
 requests = {}
 held = {}
@@ -86,6 +87,7 @@ if lower_profile:
             beat = row["data_id"] // 2
             assert bytes.fromhex(row["data"]) == dirty[beat * 32:(beat + 1) * 32]
     assert all(r["dbid"] == 2049 and r["home_node"] == 8 for r in dct_data)
+    assert all(r["trace_tag"] is True for r in home_data + dct_data + lower_requests)
     forwarded = [r for r in events if r["direction"] == "chi_tx_rsp" and r["txn_id"] == 2049 and r["handshake"]]
     assert len(forwarded) == 1 and forwarded[0]["opcode"] == 9 and forwarded[0]["resp"] == 0 and forwarded[0]["forward_state"] == 2
 

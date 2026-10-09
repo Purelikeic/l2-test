@@ -118,7 +118,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
                 source = nodes[issued]; opcode = opcodes[issued]; address = addresses[issued];
             }
             const unsigned txn = replay.empty() ? 20 + issued : replay[issued].txn;
-            const bool tag = !replay.empty() && replay[issued].traceTag;
+            const bool tag = replay.empty() ? (issued % 2 == 0) : replay[issued].traceTag;
             stimulus << cycle() << ' ' << source << ' ' << txn << ' ' << opcode << ' ' << address << ' ' << tag << '\n';
             stimulus.flush();
             requester->enqueue({source, 1, txn, opcode, address, tag});
@@ -129,7 +129,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
                 for (unsigned i = 0; i < 64; ++i) dirtyLine[i] = uint8_t((0x1040 >> 6) ^ (i * 17) ^ cfg->seed);
                 dirtyLine[0] ^= 0xa5;
                 requester->store(1, 0x1040, dirtyLine);
-                const compactchi::LowerSnoop snoop{2048, 1, 0x1040, false, false};
+                const compactchi::LowerSnoop snoop{2048, 1, 0x1040, false, true};
                 lowerBoard->issue(snoop, compactchi::Permission::UD);
                 lowerQueue.push_back(snoop);
                 lowerPhase = 1;
@@ -143,7 +143,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
                 for (unsigned i = 0; i < 64; ++i)
                     if (memory->backend().access(0x1040 + i) != dirtyLine[i])
                         throw std::runtime_error("dirty Snoop data did not commit to Home memory");
-                const compactchi::LowerSnoop snoop{2049, 0x17, 0x1040, false, false, 12, 2500};
+                const compactchi::LowerSnoop snoop{2049, 0x17, 0x1040, false, true, 12, 2500};
                 lowerBoard->issue(snoop, compactchi::Permission::SC);
                 lowerQueue.push_back(snoop);
                 lowerPhase = 3;
@@ -233,10 +233,10 @@ public:
             dut.io_downReq_bits_tgtID, dut.io_downReq_bits_txnID, dut.io_downReq_bits_opcode, dut.io_downReq_bits_traceTag,
             dut.io_downReq_bits_addr);
         observe(C::ChiRxRsp, dut.io_downRsp_valid, dut.io_downRsp_ready, dut.io_downRsp_bits_srcID,
-            dut.io_downRsp_bits_tgtID, dut.io_downRsp_bits_txnID, dut.io_downRsp_bits_opcode, false,
+            dut.io_downRsp_bits_tgtID, dut.io_downRsp_bits_txnID, dut.io_downRsp_bits_opcode, dut.io_downRsp_bits_traceTag,
             std::nullopt, dut.io_downRsp_bits_dbID, std::nullopt, dut.io_downRsp_bits_resp, dut.io_downRsp_bits_respErr);
         observe(C::ChiRxDat, dut.io_downDat_valid, dut.io_downDat_ready, dut.io_downDat_bits_srcID,
-            dut.io_downDat_bits_tgtID, dut.io_downDat_bits_txnID, dut.io_downDat_bits_opcode, false,
+            dut.io_downDat_bits_tgtID, dut.io_downDat_bits_txnID, dut.io_downDat_bits_opcode, dut.io_downDat_bits_traceTag,
             std::nullopt, dut.io_downDat_bits_dbID, dut.io_downDat_bits_dataID, dut.io_downDat_bits_resp,
             dut.io_downDat_bits_respErr, dut.io_downDat_bits_data.data());
         observe(C::ChiTxRsp, dut.io_downTxRsp_valid, dut.io_downTxRsp_ready, dut.io_downTxRsp_bits_srcID,
@@ -287,6 +287,7 @@ public:
             plan.completionSource = 14;
             plan.retryOnce = downRequests % 3 == 0;
             plan.creditBeforeRetry = plan.retryOnce;
+            plan.responseTraceTag = downRequests % 2 == 0;
             // The Home context applies retryOnce only to a first request.
             home->accept(downRequest(), plan);
         }
@@ -371,14 +372,14 @@ public:
             dut.io_downRsp_bits_srcID = f.source; dut.io_downRsp_bits_tgtID = f.target; dut.io_downRsp_bits_txnID = f.txn;
             dut.io_downRsp_bits_opcode = f.opcode; dut.io_downRsp_bits_dbID = f.dbid;
             dut.io_downRsp_bits_resp = f.resp; dut.io_downRsp_bits_respErr = 0; dut.io_downRsp_bits_pCrdType = f.pCrdType;
-            dut.io_downRsp_bits_cBusy = 0;
+            dut.io_downRsp_bits_cBusy = 0; dut.io_downRsp_bits_traceTag = f.traceTag;
         }
         dut.io_downDat_valid = home->dataValid();
         if (home->dataValid()) {
             const auto& f = home->datum();
             dut.io_downDat_bits_srcID = f.source; dut.io_downDat_bits_tgtID = f.target; dut.io_downDat_bits_txnID = f.txn;
             dut.io_downDat_bits_opcode = f.opcode; dut.io_downDat_bits_dbID = f.dbid; dut.io_downDat_bits_homeNID = f.home;
-            dut.io_downDat_bits_dataID = f.dataId; dut.io_downDat_bits_resp = f.resp; dut.io_downDat_bits_respErr = 0;
+            dut.io_downDat_bits_dataID = f.dataId; dut.io_downDat_bits_resp = f.resp; dut.io_downDat_bits_respErr = 0; dut.io_downDat_bits_traceTag = f.traceTag;
             for (unsigned w = 0; w < 8; ++w) {
                 uint32_t value = 0;
                 for (unsigned b = 0; b < 4; ++b) value |= uint32_t(f.data[w * 4 + b]) << (b * 8);
