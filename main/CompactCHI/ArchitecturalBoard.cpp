@@ -7,7 +7,12 @@ void ArchitecturalBoard::require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
 }
 ArchitecturalBoard::ArchitecturalBoard(TLLocalContext& ctx, unsigned count)
-    : context(ctx), nodeCount(count), transient(count) {
+    : context(ctx), nodeCount(count), ownedTransient(count), global(ownedGlobal), transient(ownedTransient) {
+    require(count != 0, "scoreboard requires at least one node");
+}
+ArchitecturalBoard::ArchitecturalBoard(TLLocalContext& ctx, unsigned count,
+                                     GlobalBoard<paddr_t>& board, UncachedBoard<paddr_t>& uncached)
+    : context(ctx), nodeCount(count), ownedTransient(0), global(board), transient(uncached) {
     require(count != 0, "scoreboard requires at least one node");
 }
 NodeLine& ArchitecturalBoard::nodeLine(uint64_t address) {

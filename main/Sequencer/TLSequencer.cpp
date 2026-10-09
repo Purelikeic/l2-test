@@ -440,6 +440,7 @@ void TLSequencer::Initialize(const TLLocalConfig& cfg) noexcept
 
 void TLSequencer::Finalize() noexcept
 {
+    if (protocol) { FinalizeProtocol(); return; }
     if (state != State::ALIVE && state != State::FAILED && state != State::FINISHED)
         return;
 
@@ -561,6 +562,7 @@ void TLSequencer::Tick(uint64_t cycles) noexcept
 
 void TLSequencer::Tock() noexcept
 {
+    if (protocol) { TockProtocol(); return; }
     if (!IsAlive())
         return;
 

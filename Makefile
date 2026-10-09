@@ -320,6 +320,18 @@ compactchi-board-test:
 		-o $(COMPACTCHI_CHECK_DIR)/board-test
 	$(COMPACTCHI_CHECK_DIR)/board-test
 
+.PHONY: compactchi-sequencer-test
+compactchi-sequencer-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/SequencerTest.cpp \
+		$(CURDIR)/main/Sequencer/TLSequencer.cpp $(CURDIR)/main/Sequencer/ProtocolSequencer.cpp \
+		$(CURDIR)/main/System/TLConfig.cpp $(CURDIR)/main/Memory/MemoryAgent.cpp \
+		$(CURDIR)/main/Memory/CHIHomeMemory.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
+		$(wildcard $(CURDIR)/main/Base/*.cpp $(CURDIR)/main/Events/*.cpp \
+		$(CURDIR)/main/TLAgent/*.cpp $(CURDIR)/main/Fuzzer/*.cpp) \
+		-o $(COMPACTCHI_CHECK_DIR)/sequencer-test
+	$(COMPACTCHI_CHECK_DIR)/sequencer-test $(COMPACTCHI_CHECK_DIR)/absent-sequencer.ini
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \

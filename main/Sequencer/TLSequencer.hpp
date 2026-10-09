@@ -7,6 +7,7 @@
 #define TLC_TEST_SEQUENCER_H
 
 #include <cstdint>
+#include "TestProtocolAdapter.hpp"
 
 #include "../Utils/ScoreBoard.h"
 #include "../Utils/ULScoreBoard.h"
@@ -64,6 +65,9 @@ public:
 
 private:
     State                   state;
+    TestProtocolAdapter*    protocol = nullptr;
+    void                    TockProtocol() noexcept;
+    void                    FinalizeProtocol() noexcept;
 
     uint8_t*                pmem;
 
@@ -109,6 +113,7 @@ public:
     size_t          GetULAgentCount() const noexcept;
 
     void            Initialize(const TLLocalConfig& cfg) noexcept;
+    void            InitializeProtocol(const TLLocalConfig& cfg, TestProtocolAdapter& adapter) noexcept;
     void            Finalize() noexcept;
     void            Tick(uint64_t cycles) noexcept;
     void            Tock() noexcept;

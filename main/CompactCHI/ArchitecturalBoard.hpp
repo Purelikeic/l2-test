@@ -40,8 +40,10 @@ struct NodeLine {
 class ArchitecturalBoard {
     TLLocalContext& context;
     unsigned nodeCount;
-    GlobalBoard<paddr_t> global;
-    UncachedBoard<paddr_t> transient;
+    GlobalBoard<paddr_t> ownedGlobal;
+    UncachedBoard<paddr_t> ownedTransient;
+    GlobalBoard<paddr_t>& global;
+    UncachedBoard<paddr_t>& transient;
     ScoreBoard<uint64_t, ReadExpectation> pending;
     ScoreBoard<uint64_t, NodeLine> nodes;
     std::map<std::pair<unsigned, unsigned>, RequestKey> acks;
@@ -50,6 +52,8 @@ class ArchitecturalBoard {
     static void require(bool value, const char* message);
 public:
     explicit ArchitecturalBoard(TLLocalContext& context, unsigned nodeCount);
+    ArchitecturalBoard(TLLocalContext& context, unsigned nodeCount,
+                       GlobalBoard<paddr_t>& global, UncachedBoard<paddr_t>& uncached);
     void initialize(uint64_t address, const LineData& data);
     void issue(RequestKey key, ReadClass request, uint64_t address, bool traceTag);
     void data(RequestKey key, unsigned dataId, unsigned dbid, unsigned resp,

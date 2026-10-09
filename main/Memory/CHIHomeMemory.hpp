@@ -4,6 +4,7 @@
 #include <array>
 #include <deque>
 #include <map>
+#include <memory>
 
 namespace chi_agent {
 
@@ -30,8 +31,10 @@ class HomeMemory {
     struct PendingWrite { MemoryRequest request; unsigned beat = 0; bool addressSent = false; };
     TLLocalConfig& config;
     uint64_t& cycles;
-    axi_agent::Bundle<BEATSIZE_MEMORY> port{};
-    axi_agent::MemoryAgent memory;
+    axi_agent::Bundle<BEATSIZE_MEMORY> ownedPort{};
+    axi_agent::Bundle<BEATSIZE_MEMORY>& port;
+    std::unique_ptr<axi_agent::MemoryAgent> ownedMemory;
+    axi_agent::MemoryAgent& memory;
     std::deque<MemoryRequest> readQueue;
     std::deque<PendingWrite> writeQueue;
     std::map<uint32_t, PendingRead> reads;
@@ -40,6 +43,11 @@ class HomeMemory {
     void drive();
 public:
     HomeMemory(TLLocalConfig& config, uint64_t& cycles);
+    HomeMemory(TLLocalConfig& config, uint64_t& cycles,
+               axi_agent::MemoryAgent& memory, axi_agent::Bundle<BEATSIZE_MEMORY>& port);
+    // Borrowed mode is stepped by the original Sequencer around these hooks.
+    void handleChannels();
+    void updateSignals();
     bool ready(bool write) const;
     void submit(const MemoryRequest& request);
     void tick();

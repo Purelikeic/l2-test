@@ -4,11 +4,20 @@
 
 namespace chi_agent {
 HomeMemory::HomeMemory(TLLocalConfig& cfg, uint64_t& cycle)
-    : config(cfg), cycles(cycle), memory(&cfg, cfg.seed, &cycle, 0) {
+    : config(cfg), cycles(cycle), port(ownedPort),
+      ownedMemory(std::make_unique<axi_agent::MemoryAgent>(&cfg, cfg.seed, &cycle, 0)),
+      memory(*ownedMemory) {
     if (cfg.memoryEnd <= cfg.memoryStart || cfg.memoryCycleUnit == 0)
         throw std::invalid_argument("CHI Home requires a nonempty memory region and cycle unit");
     memory.connect(&port);
     memory.update_signal();
+}
+
+HomeMemory::HomeMemory(TLLocalConfig& cfg, uint64_t& cycle,
+                       axi_agent::MemoryAgent& backend, axi_agent::Bundle<BEATSIZE_MEMORY>& bundle)
+    : config(cfg), cycles(cycle), port(bundle), memory(backend) {
+    if (cfg.memoryEnd <= cfg.memoryStart || cfg.memoryCycleUnit == 0)
+        throw std::invalid_argument("CHI Home requires a nonempty memory region and cycle unit");
 }
 
 bool HomeMemory::ready(bool write) const {
@@ -68,8 +77,7 @@ void HomeMemory::drive() {
     port.b.ready = 1;
 }
 
-void HomeMemory::tick() {
-    drive();
+void HomeMemory::handleChannels() {
     const bool arFire = port.ar.fire(), awFire = port.aw.fire(), wFire = port.w.fire();
     if (port.r.fire()) {
         auto it = reads.find(port.r.id);
@@ -90,10 +98,18 @@ void HomeMemory::tick() {
         completed.push_back({port.b.id, it->second, true});
         writes.erase(it);
     }
-    memory.handle_channel();
     if (arFire) readQueue.pop_front();
     if (awFire) writeQueue.front().addressSent = true;
     if (wFire && ++writeQueue.front().beat == 2) writeQueue.pop_front();
+}
+
+void HomeMemory::updateSignals() { drive(); }
+
+void HomeMemory::tick() {
+    if (!ownedMemory) throw std::runtime_error("borrowed HomeMemory must be stepped by Sequencer");
+    drive();
+    handleChannels();
+    memory.handle_channel();
     memory.update_signal();
 }
 
