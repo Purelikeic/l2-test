@@ -285,6 +285,16 @@ clean: coupledL2-verilate-clean coupledL2-verilog-clean openLLC-verilate-clean o
 DUT_SV ?= $(abspath ../build/L2Cache.sv)
 COMPACTCHI_OBJ_DIR ?= $(CURDIR)/build/compactchi
 COMPACTCHI_SEEDS ?= 42 7 12345 17 9999
+COMPACTCHI_CHECK_DIR ?= $(abspath ../build/compactchi-foundation)
+
+# Host-only checks of reused tester components; no RTL or nested DUT build.
+.PHONY: compactchi-memory-test
+compactchi-memory-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/MemoryAgentTest.cpp \
+		$(CURDIR)/main/Memory/MemoryAgent.cpp $(CURDIR)/main/Base/TLGlobal.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/memory-agent-test
+	$(COMPACTCHI_CHECK_DIR)/memory-agent-test
 
 .PHONY: compactchi-build compactchi-test
 compactchi-build:

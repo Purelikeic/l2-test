@@ -131,7 +131,7 @@ namespace axi_agent {
             delete[] this->pmem;
     }
 
-    size_t MemoryAgent::cycle() const noexcept
+    uint64_t MemoryAgent::cycle() const noexcept
     {
         return *cycles;
     }
