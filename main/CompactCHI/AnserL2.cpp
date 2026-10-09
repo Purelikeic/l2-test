@@ -1,349 +1,327 @@
 #include "VL2Cache.h"
 #include "verilated.h"
-#include <array>
-#include <cstdint>
+#include "verilated_vcd_c.h"
+#include "../Sequencer/TLSequencer.hpp"
+#include "../System/TLConfig.hpp"
+#include "../Events/TLSystemEvent.hpp"
+#include "Requester.hpp"
+#include "EbHome.hpp"
+#include "CanonicalTrace.hpp"
+#include <algorithm>
+#include <filesystem>
+#include <memory>
+#include <random>
 #include <cstdio>
-#include <deque>
-#include <map>
-#include <set>
-#include <stdexcept>
-#include <string>
-#include <vector>
 
-using Beat = std::array<uint32_t, 8>;
-struct Dat { unsigned txn, beat, opcode, resp, dbid; uint64_t line; };
-struct Rsp { unsigned txn, opcode, dbid, kind; unsigned source = 8; };
-struct UpRsp { unsigned txn, opcode, resp; };
-struct Snp { unsigned txn; uint64_t line; unsigned opcode; };
-static Beat dataFor(uint64_t line, unsigned beat) {
-  Beat data;
-  for (unsigned i = 0; i < 8; ++i) data[i] = uint32_t((line * 0x9e3779b9ULL) ^ (beat * 0x7f4a7c15ULL) ^ (i * 0x85ebca6bULL));
-  return data;
+namespace {
+class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
+    VL2Cache& dut;
+    VerilatedContext& simulation;
+    TLLocalConfig* cfg = nullptr;
+    uint64_t* cycles = nullptr;
+    std::unique_ptr<compactchi::ArchitecturalBoard> board;
+    std::unique_ptr<compactchi::Requester> requester;
+    std::unique_ptr<chi_agent::HomeMemory> memory;
+    std::unique_ptr<compactchi::EbHome> home;
+    std::unique_ptr<compactchi::CanonicalTrace> trace;
+    std::mt19937 random;
+    unsigned issued = 0, quiet = 0, downRequests = 0;
+    bool successful = false;
+    std::filesystem::path output;
+    class ReadFuzzer : public Fuzzer {
+        DutAdapter& owner;
+    public:
+        explicit ReadFuzzer(DutAdapter& owner) : owner(owner) {}
+        void tick() override { owner.generate(); }
+    } fuzzer{*this};
+    compactchi::EbRequest downRequest() const {
+        compactchi::EbRequest request{dut.io_downReq_bits_srcID, dut.io_downReq_bits_tgtID,
+            dut.io_downReq_bits_txnID, dut.io_downReq_bits_opcode, dut.io_downReq_bits_addr,
+            bool(dut.io_downReq_bits_traceTag), bool(dut.io_downReq_bits_expCompAck), dut.io_downReq_bits_size};
+        request.allowRetry = dut.io_downReq_bits_allowRetry;
+        request.pCrdType = dut.io_downReq_bits_pCrdType;
+        request.memAttr = dut.io_downReq_bits_memAttr;
+        request.order = dut.io_downReq_bits_order;
+        request.ns = dut.io_downReq_bits_ns;
+        request.likelyShared = dut.io_downReq_bits_likelyShared;
+        return request;
+    }
+    void observe(compactchi::Channel channel, bool valid, bool ready, unsigned source,
+                 unsigned target, unsigned txn, unsigned opcode, bool tag,
+                 std::optional<uint64_t> address = std::nullopt,
+                 std::optional<unsigned> dbid = std::nullopt,
+                 std::optional<unsigned> dataId = std::nullopt,
+                 std::optional<unsigned> resp = std::nullopt,
+                 std::optional<unsigned> error = std::nullopt,
+                 const uint32_t* data = nullptr) {
+        if (!valid) return;
+        compactchi::CanonicalEvent event{cycle(), simulation.time() - 1, channel, source, target, txn,
+                                        opcode, valid, ready, tag};
+        event.address = address;
+        event.dbid = dbid;
+        event.dataId = dataId;
+        event.resp = resp;
+        event.respErr = error;
+        if (data) {
+            event.data = std::array<uint8_t, 32>{};
+            for (unsigned byte = 0; byte < 32; ++byte)
+                (*event.data)[byte] = uint8_t(data[byte / 4] >> ((byte % 4) * 8));
+        }
+        trace->record(event);
+    }
+    void generate() {
+        // First deterministic profile: distinct transient/coherent identities,
+        // one persistent client, known lines, and serialized read obligations.
+        // This is not yet an N-node random transaction generator.
+        static constexpr unsigned opcodes[] = {3, 4, 16, 3};
+        static constexpr unsigned nodes[] = {0, 1, 1, 0};
+        static constexpr uint64_t addresses[] = {0x1000, 0x1040, 0x1040, 0x1040};
+        if (issued < 4 && requester->idle() && board->idle() && home->idle()) {
+            requester->enqueue({nodes[issued], 1, 20 + issued, opcodes[issued], addresses[issued], false});
+            ++issued;
+        }
+        if (issued == 4 && requester->idle() && board->idle() && home->idle() &&
+            !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
+        else quiet = 0;
+        if (quiet == 20) {
+            successful = true;
+            TLSystemFinishEvent().Fire();
+        }
+    }
+public:
+    DutAdapter(VL2Cache& dut, VerilatedContext& simulation, const std::filesystem::path& output)
+        : dut(dut), simulation(simulation), output(output) {}
+    uint64_t cycle() const noexcept override { return *cycles; }
+    int sys() const noexcept override { return 0; }
+    int sysId() const noexcept override { return 0; }
+    unsigned sysSeed() const noexcept override { return cfg->seed; }
+    const TLLocalConfig& config() const noexcept override { return *cfg; }
+    TLLocalConfig& config() noexcept override { return *cfg; }
+    bool passed() const { return successful; }
+    void initialize(TLLocalConfig& config, uint64_t& cycles, GlobalBoard<paddr_t>& global,
+                    UncachedBoard<paddr_t>& uncached, axi_agent::MemoryAgent& backend,
+                    axi_agent::Bundle<BEATSIZE_MEMORY>& memoryPort) override {
+        if (config.GetAgentCount() < 2 || config.memoryStart > 0x1000 || config.memoryEnd < 0x2000)
+            throw std::invalid_argument("deterministic DUT profile needs two identities and memory covering 0x1000..0x1fff");
+        cfg = &config;
+        this->cycles = &cycles;
+        random.seed(config.seed);
+        fuzzer.set_cycles(&cycles);
+        board = std::make_unique<compactchi::ArchitecturalBoard>(*this, config.GetAgentCount(), global, uncached);
+        requester = std::make_unique<compactchi::Requester>(*board, 1);
+        memory = std::make_unique<chi_agent::HomeMemory>(config, cycles, backend, memoryPort);
+        home = std::make_unique<compactchi::EbHome>(*memory, *this, global);
+        trace = std::make_unique<compactchi::CanonicalTrace>(output / "canonical", config.seed);
+        for (uint64_t address = 0x1000; address < 0x2000; address += 64) {
+            compactchi::LineData bytes{};
+            for (unsigned i = 0; i < 64; ++i) {
+                bytes[i] = uint8_t((address >> 6) ^ (i * 17) ^ config.seed);
+                backend.access(address + i) = bytes[i];
+            }
+            board->initialize(address, bytes);
+        }
+    }
+    void handleChannels() override {
+        using C = compactchi::Channel;
+        observe(C::CchiRxReq, dut.io_req_valid, dut.io_req_ready, dut.io_req_bits_srcID,
+            dut.io_req_bits_tgtID, dut.io_req_bits_txnID, dut.io_req_bits_opcode, dut.io_req_bits_traceTag, dut.io_req_bits_addr);
+        observe(C::CchiTxDat, dut.io_upDat_valid, dut.io_upDat_ready, dut.io_upDat_bits_srcID,
+            dut.io_upDat_bits_tgtID, dut.io_upDat_bits_txnID, dut.io_upDat_bits_opcode, dut.io_upDat_bits_traceTag,
+            std::nullopt, dut.io_upDat_bits_dbID, dut.io_upDat_bits_dataID, dut.io_upDat_bits_resp,
+            dut.io_upDat_bits_respErr, dut.io_upDat_bits_data.data());
+        observe(C::CchiTxSnp, dut.io_upSnp_valid, dut.io_upSnp_ready, dut.io_upSnp_bits_srcID,
+            dut.io_upSnp_bits_tgtID, dut.io_upSnp_bits_txnID, dut.io_upSnp_bits_opcode, dut.io_upSnp_bits_traceTag,
+            uint64_t(dut.io_upSnp_bits_addr) << 3);
+        observe(C::CchiRxRsp, dut.io_upRspIn_valid, dut.io_upRspIn_ready, dut.io_upRspIn_bits_srcID,
+            dut.io_upRspIn_bits_tgtID, dut.io_upRspIn_bits_txnID, dut.io_upRspIn_bits_opcode, dut.io_upRspIn_bits_traceTag,
+            std::nullopt, std::nullopt, std::nullopt, dut.io_upRspIn_bits_resp, dut.io_upRspIn_bits_respErr);
+        observe(C::ChiTxReq, dut.io_downReq_valid, dut.io_downReq_ready, dut.io_downReq_bits_srcID,
+            dut.io_downReq_bits_tgtID, dut.io_downReq_bits_txnID, dut.io_downReq_bits_opcode, dut.io_downReq_bits_traceTag,
+            dut.io_downReq_bits_addr);
+        observe(C::ChiRxRsp, dut.io_downRsp_valid, dut.io_downRsp_ready, dut.io_downRsp_bits_srcID,
+            dut.io_downRsp_bits_tgtID, dut.io_downRsp_bits_txnID, dut.io_downRsp_bits_opcode, false,
+            std::nullopt, dut.io_downRsp_bits_dbID, std::nullopt, dut.io_downRsp_bits_resp, dut.io_downRsp_bits_respErr);
+        observe(C::ChiRxDat, dut.io_downDat_valid, dut.io_downDat_ready, dut.io_downDat_bits_srcID,
+            dut.io_downDat_bits_tgtID, dut.io_downDat_bits_txnID, dut.io_downDat_bits_opcode, false,
+            std::nullopt, dut.io_downDat_bits_dbID, dut.io_downDat_bits_dataID, dut.io_downDat_bits_resp,
+            dut.io_downDat_bits_respErr, dut.io_downDat_bits_data.data());
+        observe(C::ChiTxRsp, dut.io_downTxRsp_valid, dut.io_downTxRsp_ready, dut.io_downTxRsp_bits_srcID,
+            dut.io_downTxRsp_bits_tgtID, dut.io_downTxRsp_bits_txnID, dut.io_downTxRsp_bits_opcode, dut.io_downTxRsp_bits_traceTag,
+            std::nullopt, dut.io_downTxRsp_bits_dbID, std::nullopt, dut.io_downTxRsp_bits_resp, dut.io_downTxRsp_bits_respErr);
+        observe(C::CchiRxEvt, dut.io_evt_valid, dut.io_evt_ready, dut.io_evt_bits_srcID,
+            dut.io_evt_bits_tgtID, dut.io_evt_bits_txnID, dut.io_evt_bits_opcode, dut.io_evt_bits_traceTag, dut.io_evt_bits_addr);
+        observe(C::CchiTxRsp, dut.io_upRsp_valid, dut.io_upRsp_ready, dut.io_upRsp_bits_srcID,
+            dut.io_upRsp_bits_tgtID, dut.io_upRsp_bits_txnID, dut.io_upRsp_bits_opcode, dut.io_upRsp_bits_traceTag,
+            std::nullopt, dut.io_upRsp_bits_dbID, std::nullopt, dut.io_upRsp_bits_resp, dut.io_upRsp_bits_respErr);
+        observe(C::CchiRxDat, dut.io_upDatIn_valid, dut.io_upDatIn_ready, dut.io_upDatIn_bits_srcID,
+            dut.io_upDatIn_bits_tgtID, dut.io_upDatIn_bits_txnID, dut.io_upDatIn_bits_opcode, dut.io_upDatIn_bits_traceTag,
+            std::nullopt, std::nullopt, dut.io_upDatIn_bits_dataID, dut.io_upDatIn_bits_resp,
+            dut.io_upDatIn_bits_respErr, dut.io_upDatIn_bits_data.data());
+        observe(C::ChiRxSnp, dut.io_downSnp_valid, dut.io_downSnp_ready, dut.io_downSnp_bits_srcID,
+            1, dut.io_downSnp_bits_txnID, dut.io_downSnp_bits_opcode, dut.io_downSnp_bits_traceTag,
+            uint64_t(dut.io_downSnp_bits_addr) << 3);
+        observe(C::ChiTxDat, dut.io_downTxDat_valid, dut.io_downTxDat_ready, dut.io_downTxDat_bits_srcID,
+            dut.io_downTxDat_bits_tgtID, dut.io_downTxDat_bits_txnID, dut.io_downTxDat_bits_opcode, dut.io_downTxDat_bits_traceTag,
+            std::nullopt, dut.io_downTxDat_bits_dbID, dut.io_downTxDat_bits_dataID, dut.io_downTxDat_bits_resp,
+            dut.io_downTxDat_bits_respErr, dut.io_downTxDat_bits_data.data());
+        if (dut.io_req_valid && dut.io_req_ready) requester->requestAccepted();
+        if (dut.io_upRspIn_valid && dut.io_upRspIn_ready) requester->responseAccepted();
+        if (dut.io_upDatIn_valid && dut.io_upDatIn_ready) requester->dataAccepted();
+        if (dut.io_downRsp_valid && dut.io_downRsp_ready) home->responseAccepted();
+        if (dut.io_downDat_valid && dut.io_downDat_ready) home->dataAccepted();
+        if (dut.io_upDat_valid && dut.io_upDat_ready) {
+            compactchi::DataFlit flit{dut.io_upDat_bits_srcID, dut.io_upDat_bits_tgtID, dut.io_upDat_bits_txnID,
+                dut.io_upDat_bits_dbID, dut.io_upDat_bits_dataID, dut.io_upDat_bits_resp, bool(dut.io_upDat_bits_traceTag)};
+            flit.opcode = dut.io_upDat_bits_opcode;
+            flit.respErr = dut.io_upDat_bits_respErr;
+            for (unsigned b = 0; b < 32; ++b) flit.data[b] = uint8_t(dut.io_upDat_bits_data[b / 4] >> ((b % 4) * 8));
+            requester->receiveData(flit);
+        }
+        if (dut.io_upSnp_valid && dut.io_upSnp_ready)
+            requester->receiveSnoop({dut.io_upSnp_bits_srcID, dut.io_upSnp_bits_tgtID, dut.io_upSnp_bits_txnID,
+                dut.io_upSnp_bits_opcode, uint64_t(dut.io_upSnp_bits_addr) << 3, bool(dut.io_upSnp_bits_traceTag)});
+        if (dut.io_upRsp_valid) throw std::runtime_error("unsupported no-data completion in the initial read profile");
+        if (dut.io_downReq_valid && dut.io_downReq_ready) {
+            compactchi::HomePlan plan;
+            plan.separated = (++downRequests % 2) == 0;
+            plan.completionAfterData = plan.separated;
+            plan.upperBeatFirst = plan.separated;
+            plan.completionSource = 14;
+            plan.retryOnce = downRequests % 3 == 0;
+            plan.creditBeforeRetry = plan.retryOnce;
+            // The Home context applies retryOnce only to a first request.
+            home->accept(downRequest(), plan);
+        }
+        if (dut.io_downTxRsp_valid && dut.io_downTxRsp_ready) {
+            if (dut.io_downTxRsp_bits_opcode != 2) throw std::runtime_error("unsupported lower Snoop response in initial read profile");
+            home->receiveCompAck(dut.io_downTxRsp_bits_srcID, dut.io_downTxRsp_bits_tgtID,
+                dut.io_downTxRsp_bits_txnID, dut.io_downTxRsp_bits_traceTag);
+        }
+        if (dut.io_downTxDat_valid) throw std::runtime_error("unexpected lower copyback in initial read profile");
+        memory->handleChannels();
+        home->service();
+    }
+    void fuzz() override { fuzzer.tick(); }
+    void updateSignals() override { memory->updateSignals(); }
+    void drive() {
+        dut.io_l2NodeId = 1; dut.io_homeNodeId = 8;
+        dut.io_flush = 0; dut.io_evt_valid = 0; dut.io_prefetchTask_valid = 0; dut.io_downSnp_valid = 0;
+        dut.io_upDatIn_valid = requester->dataValid();
+        if (requester->dataValid()) {
+            const auto& f = requester->data();
+            dut.io_upDatIn_bits_srcID = f.node; dut.io_upDatIn_bits_tgtID = f.target;
+            dut.io_upDatIn_bits_txnID = f.txn; dut.io_upDatIn_bits_opcode = f.opcode;
+            dut.io_upDatIn_bits_dataID = f.dataId; dut.io_upDatIn_bits_resp = f.resp;
+            dut.io_upDatIn_bits_respErr = 0; dut.io_upDatIn_bits_traceTag = f.traceTag;
+            dut.io_upDatIn_bits_byteEnable = f.byteEnable;
+            for (unsigned w = 0; w < 8; ++w) {
+                uint32_t value = 0;
+                for (unsigned b = 0; b < 4; ++b) value |= uint32_t(f.data[w * 4 + b]) << (b * 8);
+                dut.io_upDatIn_bits_data[w] = value;
+            }
+        }
+        dut.io_req_valid = requester->requestValid();
+        if (requester->requestValid()) {
+            const auto& f = requester->request();
+            dut.io_req_bits_srcID = f.node; dut.io_req_bits_tgtID = f.target; dut.io_req_bits_txnID = f.txn;
+            dut.io_req_bits_opcode = f.opcode; dut.io_req_bits_addr = f.address; dut.io_req_bits_size = 6;
+            dut.io_req_bits_tagAlias = 0; dut.io_req_bits_ns = 0; dut.io_req_bits_order = 0;
+            dut.io_req_bits_memAttr = 0; dut.io_req_bits_excl = 0; dut.io_req_bits_expCompData = 1;
+            dut.io_req_bits_expCompStash = 0; dut.io_req_bits_wayValid = 0; dut.io_req_bits_way = 0;
+            dut.io_req_bits_traceTag = f.traceTag; dut.io_vaddr = f.address;
+        }
+        dut.io_upRspIn_valid = requester->responseValid();
+        if (requester->responseValid()) {
+            const auto& f = requester->response();
+            dut.io_upRspIn_bits_srcID = f.node; dut.io_upRspIn_bits_tgtID = f.target; dut.io_upRspIn_bits_txnID = f.txn;
+            dut.io_upRspIn_bits_opcode = f.opcode; dut.io_upRspIn_bits_resp = f.resp;
+            dut.io_upRspIn_bits_traceTag = f.traceTag; dut.io_upRspIn_bits_respErr = 0;
+        }
+        dut.io_downRsp_valid = home->responseValid();
+        if (home->responseValid()) {
+            const auto& f = home->response();
+            dut.io_downRsp_bits_srcID = f.source; dut.io_downRsp_bits_tgtID = f.target; dut.io_downRsp_bits_txnID = f.txn;
+            dut.io_downRsp_bits_opcode = f.opcode; dut.io_downRsp_bits_dbID = f.dbid;
+            dut.io_downRsp_bits_resp = f.resp; dut.io_downRsp_bits_respErr = 0; dut.io_downRsp_bits_pCrdType = f.pCrdType;
+            dut.io_downRsp_bits_cBusy = 0;
+        }
+        dut.io_downDat_valid = home->dataValid();
+        if (home->dataValid()) {
+            const auto& f = home->datum();
+            dut.io_downDat_bits_srcID = f.source; dut.io_downDat_bits_tgtID = f.target; dut.io_downDat_bits_txnID = f.txn;
+            dut.io_downDat_bits_opcode = f.opcode; dut.io_downDat_bits_dbID = f.dbid; dut.io_downDat_bits_homeNID = f.home;
+            dut.io_downDat_bits_dataID = f.dataId; dut.io_downDat_bits_resp = f.resp; dut.io_downDat_bits_respErr = 0;
+            for (unsigned w = 0; w < 8; ++w) {
+                uint32_t value = 0;
+                for (unsigned b = 0; b < 4; ++b) value |= uint32_t(f.data[w * 4 + b]) << (b * 8);
+                dut.io_downDat_bits_data[w] = value;
+            }
+        }
+        dut.io_upDat_ready = random() % 4 != 0; dut.io_upRsp_ready = 1;
+        dut.io_upSnp_ready = requester->snoopReady(); dut.io_downTxRsp_ready = random() % 4 != 0;
+        dut.io_downTxDat_ready = 1;
+        dut.io_downReq_ready = 0;
+        dut.eval();
+        dut.io_downReq_ready = home->requestReady(downRequest());
+        dut.eval();
+    }
+    void finalize() override {
+        if (successful && (!requester->idle() || !board->idle() || !home->idle()))
+            throw std::runtime_error("final DUT profile resources did not drain");
+        trace.reset(); home.reset(); memory.reset(); requester.reset(); board.reset();
+    }
+};
 }
-static void poke(VlWide<8>& port, const Beat& data) { for (unsigned i = 0; i < 8; ++i) port[i] = data[i]; }
-static void check(const VlWide<8>& port, const Beat& data, const std::string& msg) {
-  for (unsigned i = 0; i < 8; ++i) if (port[i] != data[i]) throw std::runtime_error(msg + " word=" + std::to_string(i) + " got=" + std::to_string(port[i]) + " expected=" + std::to_string(data[i]));
-}
+
 int main(int argc, char** argv) {
-  VerilatedContext context;
-  context.commandArgs(argc, argv);
-  VL2Cache dut{&context};
-  uint32_t rng = argc > 1 ? std::stoul(argv[1]) : 42;
-  auto random = [&]() { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; };
-  unsigned cycle = 0, accepted = 0, completed = 0, downReads = 0, writebacks = 0, snoops = 0, retries = 0;
-  unsigned nextDbid = 128, nextSnp = 2048;
-  std::deque<Dat> dat;
-  std::deque<Rsp> rsp;
-  std::map<unsigned, Rsp> lateCompletion;
-  std::map<unsigned, unsigned> receivedDataMask;
-  std::deque<UpRsp> upRsp;
-  std::deque<Snp> snp;
-  std::map<unsigned, uint64_t> address, writes, snoopAddress;
-  std::map<unsigned, unsigned> opcodes, beatMask, responseDbid, writeMask, snpMask;
-  std::set<unsigned> completedTxns, retried;
-  std::map<std::string, std::vector<uint64_t>> held;
-  bool reqActive = false;
-  unsigned reqOp = 0, reqTxn = 0, reqAlias = 0;
-  uint64_t reqLine = 0;
-  unsigned quiet = 0, flushPhase = 0, flushCycles = 0, wbfPhase = 0;
-  const uint64_t modifiedLine = (0x100000ULL >> 6) + 12 * 512;
-  bool modified = false;
-  std::deque<Dat> wbfData;
-  std::deque<Dat> snoopData;
-  bool clientDirty = false;
-  unsigned version = 0, dirtySnoopBeats = 0, dctBeats = 0;
-  std::map<unsigned, unsigned> expectedCompAck;
-  auto expectedData = [&](uint64_t line, unsigned beat) {
-    auto value = dataFor(line, beat);
-    if (modified && line == modifiedLine) {
-      value[0] ^= version == 1 ? 0xa55aa55aU : 0x12345678U;
-      value[7] ^= version == 1 ? 0x5aa55aa5U : 0x87654321U;
+    try {
+        const unsigned seed = argc > 1 ? std::stoul(argv[1]) : 42;
+        if (!seed) throw std::invalid_argument("seed must be nonzero");
+        const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
+        std::filesystem::create_directories(output);
+        auto config = LoadTestConfig([&](TLLocalConfig& config) {
+            config.seed = seed; config.coreCount = 1; config.masterCountPerCoreTLC = 1; config.masterCountPerCoreTLUL = 1;
+            config.memoryStart = 0x1000; config.memoryEnd = 0x2000; config.memoryPortCount = 1;
+            config.memoryCycleUnit = 1; config.memoryReadLatency = 4; config.memoryWriteLatency = 4;
+            config.memoryReadDepth = 16; config.memoryWriteDepth = 8; config.maximumCycle = 10000;
+        });
+        VerilatedContext simulation;
+        simulation.commandArgs(argc, argv);
+        simulation.traceEverOn(true);
+        VL2Cache dut(&simulation);
+        VerilatedVcdC waveform;
+        dut.trace(&waveform, 99);
+        waveform.open((output / "waveform.vcd").c_str());
+        auto edge = [&](bool clock) { dut.clock = clock; dut.eval(); waveform.dump(simulation.time()); simulation.timeInc(1); };
+        dut.reset = 1;
+        dut.io_req_valid = dut.io_evt_valid = dut.io_prefetchTask_valid = 0;
+        dut.io_upRspIn_valid = dut.io_upDatIn_valid = dut.io_downRsp_valid = dut.io_downDat_valid = dut.io_downSnp_valid = 0;
+        dut.io_flush = 0;
+        for (unsigned i = 0; i < 8; ++i) { edge(false); edge(true); }
+        dut.reset = 0;
+        DutAdapter adapter(dut, simulation, output);
+        TLSequencer sequencer;
+        sequencer.InitializeProtocol(config, adapter);
+        uint64_t cycle = 8;
+        const uint64_t limit = config.maximumCycle ? config.maximumCycle : 10000;
+        while (sequencer.IsAlive() && cycle < limit) {
+            sequencer.Tick(cycle);
+            dut.clock = 0;
+            adapter.drive();
+            waveform.dump(simulation.time());
+            simulation.timeInc(1);
+            sequencer.Tock();
+            edge(true);
+            ++cycle;
+        }
+        const bool passed = sequencer.IsFinished() && adapter.passed();
+        sequencer.Finalize();
+        dut.final(); waveform.close();
+        std::printf("profile=deterministic-read seed=%llu cycles=%llu independent_board=%s trace=%s\n",
+                    (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
+        return passed && !sequencer.IsFailed() ? 0 : 1;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        return 2;
     }
-    return value;
-  };
-  bool finished = false;
-  auto tick = [&]() { dut.clock = 1; dut.eval(); context.timeInc(1); dut.clock = 0; dut.eval(); context.timeInc(1); ++cycle; };
-  auto stable = [&](const std::string& name, bool valid, bool ready, std::vector<uint64_t> fields) {
-    if (held.count(name) && (!valid || held.at(name) != fields)) throw std::runtime_error("unstable " + name);
-    if (valid && !ready) held[name] = fields; else held.erase(name);
-  };
-  auto zeroInputs = [&]() {
-    dut.io_req_valid = 0; dut.io_evt_valid = 0; dut.io_prefetchTask_valid = 0;
-    dut.io_downDat_valid = 0; dut.io_downRsp_valid = 0; dut.io_downSnp_valid = 0;
-    dut.io_upRspIn_valid = 0; dut.io_upDatIn_valid = 0;
-    dut.io_upRsp_ready = 1; dut.io_upDat_ready = 1; dut.io_upSnp_ready = 1;
-    dut.io_downReq_ready = 1; dut.io_downTxRsp_ready = 1; dut.io_downTxDat_ready = 1;
-    dut.io_l2NodeId = 1; dut.io_homeNodeId = 8; dut.io_vaddr = 0; dut.io_flush = 0;
-  };
-  zeroInputs(); dut.reset = 1;
-  for (unsigned i = 0; i < 8; ++i) tick();
-  dut.reset = 0;
-  try {
-    while (cycle < 30000 && !finished) {
-      zeroInputs();
-      dut.io_flush = flushPhase == 1 || flushPhase == 3;
-      // Bursts of long output stalls are combined with independent randomized readiness.
-      const bool stall = cycle % 401 >= 130 && cycle % 401 < 180;
-      dut.io_upDat_ready = !stall && random() % 4 != 0;
-      dut.io_upRsp_ready = !stall && random() % 4 != 0;
-      dut.io_upSnp_ready = random() % 4 != 0;
-      dut.io_downReq_ready = random() % 4 != 0;
-      dut.io_downTxRsp_ready = !stall && random() % 4 != 0;
-      dut.io_downTxDat_ready = !stall && random() % 4 != 0;
-      if (!reqActive && accepted < 131 && (accepted < 128 || completed == accepted)) {
-        reqActive = true; reqTxn = accepted + 1;
-        const unsigned selector = random() % 3;
-        reqOp = selector == 0 ? 3 : selector == 1 ? 4 : 16;
-        reqLine = (0x100000ULL >> 6) + (random() % 7) * 512 + (random() % 4);
-        reqAlias = random() & 1;
-        if (reqTxn == 129) { reqOp = 18; reqLine = modifiedLine; }
-        if (reqTxn == 130) { reqOp = 3; reqLine = modifiedLine; }
-        if (reqTxn == 131) { reqOp = 16; reqLine = modifiedLine; }
-      }
-      if (reqActive) {
-        dut.io_req_valid = 1; dut.io_req_bits_opcode = reqOp;
-        dut.io_req_bits_txnID = reqTxn; dut.io_req_bits_addr = reqLine << 6;
-        dut.io_req_bits_size = 6; dut.io_req_bits_srcID = 2; dut.io_req_bits_tgtID = 1;
-        dut.io_req_bits_tagAlias = reqAlias; dut.io_req_bits_ns = 0; dut.io_req_bits_order = 0;
-        dut.io_req_bits_memAttr = 0; dut.io_req_bits_excl = 0; dut.io_req_bits_expCompData = 1;
-        dut.io_req_bits_expCompStash = 0; dut.io_req_bits_wayValid = 0;
-        dut.io_req_bits_way = 0; dut.io_req_bits_traceTag = 0;
-      }
-      if (completed == 131 && wbfPhase == 0) {
-        dut.io_evt_valid = 1; dut.io_evt_bits_txnID = 200;
-        dut.io_evt_bits_srcID = 2; dut.io_evt_bits_tgtID = 1;
-        dut.io_evt_bits_opcode = 1; dut.io_evt_bits_addr = modifiedLine << 6;
-        dut.io_evt_bits_ns = 0; dut.io_evt_bits_memAttr = 0;
-        dut.io_evt_bits_wayValid = 0; dut.io_evt_bits_way = 0; dut.io_evt_bits_traceTag = 0;
-      }
-      const bool sendingSnoopData = !snoopData.empty();
-      if (sendingSnoopData || !wbfData.empty()) {
-        const auto& x = sendingSnoopData ? snoopData.front() : wbfData.front();
-        dut.io_upDatIn_valid = 1; dut.io_upDatIn_bits_txnID = x.txn;
-        dut.io_upDatIn_bits_srcID = 2; dut.io_upDatIn_bits_tgtID = 1;
-        dut.io_upDatIn_bits_opcode = x.opcode; dut.io_upDatIn_bits_resp = x.resp;
-        dut.io_upDatIn_bits_respErr = 0; dut.io_upDatIn_bits_dataID = x.beat;
-        dut.io_upDatIn_bits_byteEnable = 0xffffffffU; dut.io_upDatIn_bits_traceTag = 0;
-        poke(dut.io_upDatIn_bits_data, expectedData(x.line, x.beat));
-      }
-      if (!dat.empty()) {
-        const auto& x = dat.front();
-        dut.io_downDat_valid = 1; dut.io_downDat_bits_txnID = x.txn;
-        dut.io_downDat_bits_srcID = 8; dut.io_downDat_bits_tgtID = 1;
-        dut.io_downDat_bits_opcode = x.opcode; dut.io_downDat_bits_dbID = x.dbid;
-        dut.io_downDat_bits_homeNID = 8; dut.io_downDat_bits_respErr = 0;
-        dut.io_downDat_bits_resp = x.resp; dut.io_downDat_bits_dataID = x.beat * 2;
-        poke(dut.io_downDat_bits_data, expectedData(x.line, x.beat));
-      }
-      if (!rsp.empty()) {
-        const auto& x = rsp.front();
-        dut.io_downRsp_valid = 1; dut.io_downRsp_bits_txnID = x.txn;
-        dut.io_downRsp_bits_srcID = x.source; dut.io_downRsp_bits_tgtID = 1;
-        dut.io_downRsp_bits_opcode = x.opcode; dut.io_downRsp_bits_dbID = x.dbid;
-        dut.io_downRsp_bits_resp = 2; dut.io_downRsp_bits_respErr = 0;
-        dut.io_downRsp_bits_pCrdType = x.kind; dut.io_downRsp_bits_cBusy = 0;
-      }
-      if (!upRsp.empty()) {
-        const auto& x = upRsp.front();
-        dut.io_upRspIn_valid = 1; dut.io_upRspIn_bits_txnID = x.txn;
-        dut.io_upRspIn_bits_srcID = 2; dut.io_upRspIn_bits_tgtID = 1;
-        dut.io_upRspIn_bits_opcode = x.opcode; dut.io_upRspIn_bits_resp = x.resp;
-        dut.io_upRspIn_bits_respErr = 0; dut.io_upRspIn_bits_traceTag = 0;
-      }
-      if (!snp.empty()) {
-        const auto& x = snp.front();
-        dut.io_downSnp_valid = 1; dut.io_downSnp_bits_txnID = x.txn;
-        dut.io_downSnp_bits_addr = x.line << 3; dut.io_downSnp_bits_srcID = 8;
-        const bool forwarded = x.opcode == 0x11 || x.opcode == 0x17;
-        dut.io_downSnp_bits_opcode = x.opcode; dut.io_downSnp_bits_fwdNID = forwarded ? 12 : 0;
-        dut.io_downSnp_bits_fwdTxnID = forwarded ? x.txn + 512 : 0;
-        dut.io_downSnp_bits_retToSrc = x.opcode != 9 && x.opcode != 0xa && x.opcode != 0x17;
-        dut.io_downSnp_bits_ns = 0; dut.io_downSnp_bits_traceTag = 0;
-      }
-      dut.eval();
-      stable("REQ", dut.io_downReq_valid, dut.io_downReq_ready,
-        {dut.io_downReq_bits_txnID, dut.io_downReq_bits_opcode, dut.io_downReq_bits_addr,
-         dut.io_downReq_bits_allowRetry, dut.io_downReq_bits_pCrdType});
-      std::vector<uint64_t> upFields = {dut.io_upDat_bits_txnID, dut.io_upDat_bits_dbID,
-        dut.io_upDat_bits_dataID, dut.io_upDat_bits_respErr, dut.io_upDat_bits_resp};
-      for (unsigned i=0;i<8;++i) upFields.push_back(dut.io_upDat_bits_data[i]);
-      stable("upDAT", dut.io_upDat_valid, dut.io_upDat_ready, upFields);
-      std::vector<uint64_t> downFields = {dut.io_downTxDat_bits_txnID, dut.io_downTxDat_bits_opcode,
-        dut.io_downTxDat_bits_dataID, dut.io_downTxDat_bits_resp, dut.io_downTxDat_bits_byteEnable};
-      for (unsigned i=0;i<8;++i) downFields.push_back(dut.io_downTxDat_bits_data[i]);
-      stable("downDAT", dut.io_downTxDat_valid, dut.io_downTxDat_ready, downFields);
-      stable("upRSP", dut.io_upRsp_valid, dut.io_upRsp_ready,
-        {dut.io_upRsp_bits_txnID, dut.io_upRsp_bits_opcode, dut.io_upRsp_bits_dbID, dut.io_upRsp_bits_respErr, dut.io_upRsp_bits_resp});
-      stable("upSNP", dut.io_upSnp_valid, dut.io_upSnp_ready,
-        {dut.io_upSnp_bits_txnID, dut.io_upSnp_bits_opcode, dut.io_upSnp_bits_addr});
-      stable("downRSP", dut.io_downTxRsp_valid, dut.io_downTxRsp_ready,
-        {dut.io_downTxRsp_bits_txnID, dut.io_downTxRsp_bits_opcode, dut.io_downTxRsp_bits_resp});
-      // Retire input fronts before adding newly generated responses.
-      if (dut.io_downDat_valid && dut.io_downDat_ready) {
-        const auto x = dat.front();
-        receivedDataMask[x.dbid] |= 1U << x.beat;
-        if (receivedDataMask[x.dbid] == 3 && lateCompletion.count(x.dbid)) {
-          rsp.push_back(lateCompletion.at(x.dbid));
-          lateCompletion.erase(x.dbid);
-        }
-        dat.pop_front();
-      }
-      if (dut.io_downRsp_valid && dut.io_downRsp_ready) rsp.pop_front();
-      if (dut.io_upRspIn_valid && dut.io_upRspIn_ready) upRsp.pop_front();
-      if (dut.io_evt_valid && dut.io_evt_ready) { modified = true; version = 2; wbfPhase = 1; }
-      if (dut.io_upRsp_valid && dut.io_upRsp_ready) {
-        if (dut.io_upRsp_bits_txnID == 129 && dut.io_upRsp_bits_opcode == 1) {
-          if (!address.count(129) || completedTxns.count(129) || dut.io_upRsp_bits_resp != 2)
-            throw std::runtime_error("invalid MakeUnique completion");
-          completedTxns.insert(129); ++completed;
-          modified = true; version = 1; clientDirty = true; // requester completes the full-line overwrite
-          upRsp.push_back({dut.io_upRsp_bits_dbID, 0, 0});
-        } else {
-          if (wbfPhase != 1 || dut.io_upRsp_bits_txnID != 200 || dut.io_upRsp_bits_opcode != 3)
-            throw std::runtime_error("unknown WriteBackFull response");
-          wbfPhase = 2;
-          wbfData.push_back({dut.io_upRsp_bits_dbID, 0, 2, 6, 0, modifiedLine});
-          wbfData.push_back({dut.io_upRsp_bits_dbID, 1, 2, 6, 0, modifiedLine});
-        }
-      }
-      if (dut.io_upDatIn_valid && dut.io_upDatIn_ready) {
-        if (sendingSnoopData) {
-          snoopData.pop_front(); ++dirtySnoopBeats;
-        } else {
-          wbfData.pop_front();
-          if (wbfData.empty()) {
-            wbfPhase = 3;
-            const unsigned txn = nextSnp++; snoopAddress[txn] = modifiedLine;
-            snp.push_back({txn, modifiedLine, 0x11});
-            snoopAddress[txn + 512] = modifiedLine;
-          }
-        }
-      }
-      if (dut.io_downSnp_valid && dut.io_downSnp_ready) { ++snoops; snp.pop_front(); }
-      if (dut.io_req_valid && dut.io_req_ready) {
-        address[reqTxn] = reqLine; opcodes[reqTxn] = reqOp; ++accepted; reqActive = false;
-      }
-      if (dut.io_downReq_valid && dut.io_downReq_ready) {
-        const unsigned txn = dut.io_downReq_bits_txnID, op = dut.io_downReq_bits_opcode;
-        if ((dut.io_downReq_bits_addr & 63) || dut.io_downReq_bits_size != 6 ||
-            !(dut.io_downReq_bits_memAttr & 4)) throw std::runtime_error("invalid cacheable line framing");
-        if (dut.io_downReq_bits_allowRetry && dut.io_downReq_bits_pCrdType != 0)
-          throw std::runtime_error("initial request used retry credit");
-        const uint64_t line = dut.io_downReq_bits_addr >> 6;
-        if ((op == 0x26 || op == 7) && dut.io_downReq_bits_allowRetry && txn % 7 == 3 && !retried.count(txn)) {
-          retried.insert(txn); ++retries;
-          // Grant precedes RetryAck to exercise early credit ownership.
-          rsp.push_back({0, 7, 0, 3}); rsp.push_back({txn, 3, 0, 3});
-        } else if (op == 0x26 || op == 7) {
-          ++downReads;
-          const unsigned dbid = nextDbid++;
-          const bool split = downReads % 3 == 0;
-          expectedCompAck[dbid] = split ? 14 : 8;
-          const unsigned response = op == 7 ? (downReads % 4 == 0 ? 6 : 2) : 1;
-          if (split) {
-            const Rsp completion{txn, 0xb, dbid, 0, 14};
-            if (downReads % 2) lateCompletion[dbid] = completion;
-            else rsp.push_back(completion);
-          }
-          const unsigned firstBeat = downReads % 2;
-          dat.push_back({txn, firstBeat, split ? 0xbU : 4U, response, dbid, line});
-          dat.push_back({txn, 1 - firstBeat, split ? 0xbU : 4U, response, dbid, line});
-        } else if (op == 0xd || op == 0x10 || op == 0x11 || op == 0xf || op == 0xc) {
-          const unsigned dbid = nextDbid++;
-          rsp.push_back({txn, 4, dbid, 0});
-          if (op == 0xc) expectedCompAck[dbid] = 8;
-        } else if (op == 0x42) {
-          const unsigned dbid = nextDbid++;
-          if (downReads % 2 == 0) { rsp.push_back({txn, 4, dbid, 0}); expectedCompAck[dbid] = 8; }
-          else { writes[dbid] = line; rsp.push_back({txn, 5, dbid, 0}); ++writebacks; }
-        } else if (op == 0x1b || op == 0x17) {
-          const unsigned dbid = nextDbid++; writes[dbid] = line;
-          rsp.push_back({txn, 5, dbid, 0}); ++writebacks;
-        } else throw std::runtime_error("unsupported downREQ " + std::to_string(op));
-      }
-      if (dut.io_upDat_valid && dut.io_upDat_ready) {
-        const unsigned txn = dut.io_upDat_bits_txnID, beat = dut.io_upDat_bits_dataID;
-        if (!address.count(txn) || completedTxns.count(txn) || (beatMask[txn] & (1U << beat)))
-          throw std::runtime_error("duplicate/unknown upDAT " + std::to_string(txn));
-        check(dut.io_upDat_bits_data, expectedData(address[txn], beat), "upDAT txn=" + std::to_string(txn));
-        if (responseDbid.count(txn) && responseDbid[txn] != dut.io_upDat_bits_dbID)
-          throw std::runtime_error("changed DBID");
-        responseDbid[txn] = dut.io_upDat_bits_dbID; beatMask[txn] |= 1U << beat;
-        if (opcodes[txn] == 16 && (dut.io_upDat_bits_resp & 3) != 2) throw std::runtime_error("missing Unique permission");
-        if (beatMask[txn] == 3) {
-          completedTxns.insert(txn); ++completed;
-          if (opcodes[txn] != 3) upRsp.push_back({responseDbid[txn], 0, 0});
-          if (completed % 9 == 0 && nextSnp < 2100) {
-            const unsigned snpTxn = nextSnp++;
-            static constexpr unsigned snoopOps[] = {1, 3, 7, 9, 0xa, 0x11, 0x17};
-            const unsigned snpOp = snoopOps[random() % 7];
-            snoopAddress[snpTxn] = address[txn]; snp.push_back({snpTxn, address[txn], snpOp});
-            if (snpOp == 0x11 || snpOp == 0x17) snoopAddress[snpTxn + 512] = address[txn];
-          }
-        }
-      }
-      if (dut.io_upSnp_valid && dut.io_upSnp_ready) {
-        const unsigned op = dut.io_upSnp_bits_opcode;
-        const uint64_t line = dut.io_upSnp_bits_addr >> 3;
-        if (line == modifiedLine && clientDirty && op != 0) {
-          const unsigned resp = (op < 2 ? 0U : 1U) | 4U;
-          snoopData.push_back({dut.io_upSnp_bits_txnID, 0, 3, resp, 0, line});
-          snoopData.push_back({dut.io_upSnp_bits_txnID, 1, 3, resp, 0, line});
-          clientDirty = false;
-        } else {
-          upRsp.push_back({dut.io_upSnp_bits_txnID, 1, op < 2 ? 0U : 1U});
-        }
-      }
-      if (dut.io_downTxDat_valid && dut.io_downTxDat_ready) {
-        const unsigned txn = dut.io_downTxDat_bits_txnID, beat = dut.io_downTxDat_bits_dataID / 2;
-        if (dut.io_downTxDat_bits_opcode == 2) {
-          if (!writes.count(txn) || (writeMask[txn] & (1U << beat))) throw std::runtime_error("unknown/duplicate writeback");
-          if (dut.io_downTxDat_bits_byteEnable) check(dut.io_downTxDat_bits_data, expectedData(writes[txn], beat), "writeback");
-          writeMask[txn] |= 1U << beat;
-          if (writeMask[txn] == 3) writes.erase(txn);
-        } else {
-          if (!snoopAddress.count(txn) || (snpMask[txn] & (1U << beat))) throw std::runtime_error("unknown/duplicate Snoop data");
-          check(dut.io_downTxDat_bits_data, expectedData(snoopAddress[txn], beat), "Snoop data txn=" + std::to_string(txn) + " line=" + std::to_string(snoopAddress[txn]));
-          if (dut.io_downTxDat_bits_opcode == 4) {
-            if (dut.io_downTxDat_bits_tgtID != 12) throw std::runtime_error("misrouted DCT");
-            ++dctBeats;
-          } else if (dut.io_downTxDat_bits_tgtID != 8) throw std::runtime_error("misrouted Home Snoop data");
-          snpMask[txn] |= 1U << beat;
-          if (snpMask[txn] == 3) {
-            if (dut.io_downTxDat_bits_opcode == 1) snoopAddress.erase(txn + 512);
-            snoopAddress.erase(txn);
-          }
-        }
-      }
-      if (dut.io_downTxRsp_valid && dut.io_downTxRsp_ready) {
-        const unsigned txn = dut.io_downTxRsp_bits_txnID;
-        if (dut.io_downTxRsp_bits_opcode == 2) {
-          if (!expectedCompAck.count(txn) || expectedCompAck[txn] != dut.io_downTxRsp_bits_tgtID)
-            throw std::runtime_error("unknown or misrouted downstream CompAck");
-          expectedCompAck.erase(txn);
-        } else {
-          if (!snoopAddress.count(txn)) throw std::runtime_error("unknown/duplicate Snoop response");
-          if (dut.io_downTxRsp_bits_opcode == 1) snoopAddress.erase(txn + 512);
-          snoopAddress.erase(txn);
-        }
-      }
-      if (accepted == 131 && completed == 131 && wbfPhase == 3 && dat.empty() && rsp.empty() && upRsp.empty() &&
-          snoopData.empty() && expectedCompAck.empty() && lateCompletion.empty() &&
-          snp.empty() && writes.empty() && snoopAddress.empty() && !dut.io_downReq_valid && !dut.io_upSnp_valid)
-        ++quiet; else quiet = 0;
-      if (flushPhase && dut.io_upRsp_valid) throw std::runtime_error("internal Flush emitted an external completion");
-      if (flushPhase == 0 && quiet == 40) { flushPhase = 1; flushCycles = 0; }
-      else if (flushPhase == 1 && ++flushCycles == 100) { flushPhase = 2; flushCycles = 0; }
-      else if (flushPhase == 2 && ++flushCycles == 5) { flushPhase = 3; flushCycles = 0; }
-      else if (flushPhase == 3 && dut.io_flushDone) finished = true;
-      tick();
-    }
-    std::printf("accepted=%u completed=%u downReads=%u writebacks=%u snoops=%u retries=%u dirtySnoopBeats=%u dctBeats=%u cycles=%u quiet=%u\n",
-      accepted, completed, downReads, writebacks, snoops, retries, dirtySnoopBeats, dctBeats, cycle, quiet);
-    if (!finished || snoops == 0 || retries == 0 || writebacks == 0 || dirtySnoopBeats != 2 || dctBeats == 0) return 1;
-    return 0;
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "cycle=%u accepted=%u completed=%u: %s\n", cycle, accepted, completed, e.what());
-    return 2;
-  }
 }

@@ -283,7 +283,7 @@ clean: coupledL2-verilate-clean coupledL2-verilog-clean openLLC-verilate-clean o
 # Compact CHI frontend for standalone AnserL2. Generated artifacts remain
 # outside main/ and the existing TileLink targets keep their original behavior.
 DUT_SV ?= $(abspath ../build/L2Cache.sv)
-COMPACTCHI_OBJ_DIR ?= $(CURDIR)/build/compactchi
+COMPACTCHI_OBJ_DIR ?= $(abspath ../build/compactchi-native-obj)
 COMPACTCHI_SEEDS ?= 42 7 12345 17 9999
 COMPACTCHI_CHECK_DIR ?= $(abspath ../build/compactchi-foundation)
 
@@ -369,9 +369,17 @@ compactchi-lower-snoop-test:
 
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
-	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
-		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal \
-		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp
+	@mkdir -p $(COMPACTCHI_OBJ_DIR)
+	$(VERILATOR) --cc --exe --build --assert --trace -j $(THREADS_BUILD) --top-module L2Cache \
+		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal -CFLAGS "-std=c++20" \
+		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp \
+		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
+		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \
+		$(CURDIR)/main/Memory/CHIHomeMemory.cpp $(CURDIR)/main/Memory/MemoryAgent.cpp \
+		$(CURDIR)/main/Sequencer/TLSequencer.cpp $(CURDIR)/main/Sequencer/ProtocolSequencer.cpp \
+		$(CURDIR)/main/System/TLConfig.cpp \
+		$(wildcard $(CURDIR)/main/Base/*.cpp $(CURDIR)/main/Events/*.cpp \
+		$(CURDIR)/main/TLAgent/*.cpp $(CURDIR)/main/Fuzzer/*.cpp)
 
 compactchi-test: compactchi-build
 	@for seed in $(COMPACTCHI_SEEDS); do \
