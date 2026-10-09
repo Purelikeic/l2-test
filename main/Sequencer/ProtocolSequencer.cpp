@@ -8,6 +8,11 @@ void TLSequencer::InitializeProtocol(const TLLocalConfig& cfg, TestProtocolAdapt
     protocol = &adapter;
     try {
         config = cfg;
+        Gravity::RegisterListener(Gravity::MakeListener<TLSystemFinishEvent>(
+            Gravity::StringAppender("tltest.protocol.finish", uint64_t(this)).ToString(), 0,
+            [this](TLSystemFinishEvent&) {
+                if (IsAlive()) state = State::FINISHED;
+            }));
         TLSystemInitializationPreEvent(&config).Fire();
         if (config.memoryPortCount != 1 || config.memoryEnd <= config.memoryStart || !GetAgentCount())
             throw std::invalid_argument("protocol adapter requires one memory port, a memory region and node identities");
@@ -56,6 +61,8 @@ void TLSequencer::FinalizeProtocol() noexcept {
         state = State::FAILED;
         LogError(cycles, Append("Protocol finalization failed: ", e.what()).EndLine());
     }
+    Gravity::UnregisterListener<TLSystemFinishEvent>(
+        Gravity::StringAppender("tltest.protocol.finish", uint64_t(this)).ToString());
     if (memories) { delete memories[0]; delete[] memories; memories = nullptr; }
     if (memoryAXI) { delete memoryAXI[0]; delete[] memoryAXI; memoryAXI = nullptr; }
     delete[] pmem; pmem = nullptr;

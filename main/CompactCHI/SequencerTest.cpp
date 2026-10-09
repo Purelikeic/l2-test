@@ -1,5 +1,6 @@
 #include "../Sequencer/TLSequencer.hpp"
 #include "../System/TLConfig.hpp"
+#include "../Events/TLSystemEvent.hpp"
 #include "../Memory/CHIHomeMemory.hpp"
 #include "ArchitecturalBoard.hpp"
 #include <cstdio>
@@ -161,6 +162,11 @@ int main(int argc, char** argv) {
             homeSequencer.Tock();
             require(homeSequencer.IsAlive(), "borrowed Home/board cycle failed");
         }
+        TLSystemFinishEvent().Fire();
+        require(homeSequencer.IsFinished(), "protocol Sequencer ignored the original fuzzer finish event");
+        homeSequencer.Tick(100);
+        homeSequencer.Tock();
+        require(homeSequencer.IsFinished(), "finished protocol resumed scheduling");
         homeSequencer.Finalize();
         require(homeAdapter.finalized, "borrowed Home/board did not finalize");
         Adapter failure;
