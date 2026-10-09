@@ -350,6 +350,15 @@ compactchi-requester-test:
 		$(CURDIR)/main/Base/TLGlobal.cpp -o $(COMPACTCHI_CHECK_DIR)/requester-test
 	$(COMPACTCHI_CHECK_DIR)/requester-test
 
+.PHONY: compactchi-eb-home-test
+compactchi-eb-home-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/EbHomeTest.cpp \
+		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/Memory/CHIHomeMemory.cpp \
+		$(CURDIR)/main/Memory/MemoryAgent.cpp $(CURDIR)/main/Base/TLGlobal.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/eb-home-test
+	$(COMPACTCHI_CHECK_DIR)/eb-home-test
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
