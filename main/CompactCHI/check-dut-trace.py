@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Check the initial DUT read profile and align every observation to real VCD ports."""
 import json
+import runpy
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
 randomized = sys.argv[2:] == ["random-read"]
 lower_profile = sys.argv[2:] == ["lower-snoop"]
+profile = "random-read" if randomized else "lower-snoop" if lower_profile else "deterministic-read"
+scopes = runpy.run_path(str(Path(__file__).with_name("profile_scopes.py")))["SCOPES"]
 rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
 seed = rows[0]["seed"]
 events = rows[1:]
@@ -162,10 +165,10 @@ with (root / "waveform.vcd").open() as waveform:
             values[fields[1]] = int(value[1:], 2) if not any(c in value.lower() for c in "xz") else None
     check_time()
 assert not by_time and checked == len(events)
-evidence = {"profile": "random-read" if randomized else "lower-snoop" if lower_profile else "deterministic-read", "seed": seed,
+evidence = {"profile": profile, "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
-            "scope": "limited normal read/upgrade profile; no full alignment claim"}
+            "scope": scopes[profile]}
 if latency:
     samples = sorted(latency.values())
     evidence["latencySummaryCycles"] = {"min": samples[0], "max": samples[-1],
