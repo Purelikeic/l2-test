@@ -24,7 +24,12 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
     std::unique_ptr<chi_agent::HomeMemory> memory;
     std::unique_ptr<compactchi::EbHome> home;
     std::unique_ptr<compactchi::CanonicalTrace> trace;
-    std::mt19937 random;
+    std::mt19937 random, trafficRandom;
+    bool randomized;
+    bool mutateData;
+    std::vector<compactchi::RequestFlit> replay;
+    unsigned limitRequests;
+    std::ofstream stimulus;
     unsigned issued = 0, quiet = 0, downRequests = 0;
     bool successful = false;
     std::filesystem::path output;
@@ -62,6 +67,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
         event.dataId = dataId;
         event.resp = resp;
         event.respErr = error;
+        if (channel == compactchi::Channel::CchiTxDat) event.dataSource = dut.io_upDat_bits_dataSource;
         if (data) {
             event.data = std::array<uint8_t, 32>{};
             for (unsigned byte = 0; byte < 32; ++byte)
@@ -76,11 +82,31 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
         static constexpr unsigned opcodes[] = {3, 4, 16, 3};
         static constexpr unsigned nodes[] = {0, 1, 1, 0};
         static constexpr uint64_t addresses[] = {0x1000, 0x1040, 0x1040, 0x1040};
-        if (issued < 4 && requester->idle() && board->idle() && home->idle()) {
-            requester->enqueue({nodes[issued], 1, 20 + issued, opcodes[issued], addresses[issued], false});
+        if (issued < limitRequests && requester->idle() && board->idle() && home->idle()) {
+            unsigned source, opcode;
+            uint64_t address;
+            if (!replay.empty()) {
+                source = replay[issued].node; opcode = replay[issued].opcode; address = replay[issued].address;
+            } else if (randomized) {
+                const unsigned line = trafficRandom() % 2;
+                address = 0x1000 + line * 64;
+                const bool persistent = trafficRandom() % 2;
+                source = persistent ? line + 1 : (trafficRandom() % 2 ? 0 : 3);
+                opcode = persistent ? 16 : 3;
+                // Identity 1 owns only line 0, identity 2 only line 1. Each
+                // line has at most one persistent owner; other identities are
+                // ReadOnce-only. Transactions serialize per profile.
+            } else {
+                source = nodes[issued]; opcode = opcodes[issued]; address = addresses[issued];
+            }
+            const unsigned txn = replay.empty() ? 20 + issued : replay[issued].txn;
+            const bool tag = !replay.empty() && replay[issued].traceTag;
+            stimulus << cycle() << ' ' << source << ' ' << txn << ' ' << opcode << ' ' << address << ' ' << tag << '\n';
+            stimulus.flush();
+            requester->enqueue({source, 1, txn, opcode, address, tag});
             ++issued;
         }
-        if (issued == 4 && requester->idle() && board->idle() && home->idle() &&
+        if (issued == limitRequests && requester->idle() && board->idle() && home->idle() &&
             !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
         else quiet = 0;
         if (quiet == 20) {
@@ -89,8 +115,22 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext {
         }
     }
 public:
-    DutAdapter(VL2Cache& dut, VerilatedContext& simulation, const std::filesystem::path& output)
-        : dut(dut), simulation(simulation), output(output) {}
+    DutAdapter(VL2Cache& dut, VerilatedContext& simulation, const std::filesystem::path& output, bool randomized,
+               const std::string& replayPath, bool mutateData)
+        : dut(dut), simulation(simulation), randomized(randomized), mutateData(mutateData),
+          limitRequests(randomized ? 96 : 4), output(output) {
+        if (!replayPath.empty()) {
+            std::ifstream input(replayPath);
+            if (!input) throw std::invalid_argument("cannot open stimulus replay file");
+            uint64_t plannedCycle, address;
+            unsigned source, txn, opcode, tag;
+            while (input >> plannedCycle >> source >> txn >> opcode >> address >> tag)
+                replay.push_back({source, 1, txn, opcode, address, tag != 0});
+            if (!input.eof() || replay.empty() || replay.size() > 256)
+                throw std::invalid_argument("invalid or empty stimulus replay file");
+            limitRequests = replay.size();
+        }
+    }
     uint64_t cycle() const noexcept override { return *cycles; }
     int sys() const noexcept override { return 0; }
     int sysId() const noexcept override { return 0; }
@@ -101,11 +141,14 @@ public:
     void initialize(TLLocalConfig& config, uint64_t& cycles, GlobalBoard<paddr_t>& global,
                     UncachedBoard<paddr_t>& uncached, axi_agent::MemoryAgent& backend,
                     axi_agent::Bundle<BEATSIZE_MEMORY>& memoryPort) override {
-        if (config.GetAgentCount() < 2 || config.memoryStart > 0x1000 || config.memoryEnd < 0x2000)
+        if (config.GetAgentCount() < (randomized ? 4U : 2U) || config.memoryStart > 0x1000 || config.memoryEnd < 0x2000)
             throw std::invalid_argument("deterministic DUT profile needs two identities and memory covering 0x1000..0x1fff");
         cfg = &config;
         this->cycles = &cycles;
         random.seed(config.seed);
+        trafficRandom.seed(config.seed ^ 0x9e3779b9U);
+        stimulus.open(output / "stimulus.txt");
+        if (!stimulus) throw std::runtime_error("cannot open reproducible stimulus plan");
         fuzzer.set_cycles(&cycles);
         board = std::make_unique<compactchi::ArchitecturalBoard>(*this, config.GetAgentCount(), global, uncached);
         requester = std::make_unique<compactchi::Requester>(*board, 1);
@@ -175,6 +218,9 @@ public:
             flit.opcode = dut.io_upDat_bits_opcode;
             flit.respErr = dut.io_upDat_bits_respErr;
             for (unsigned b = 0; b < 32; ++b) flit.data[b] = uint8_t(dut.io_upDat_bits_data[b / 4] >> ((b % 4) * 8));
+            // Explicit harness mutation for checking the integrated board/reducer,
+            // never enabled by ordinary DUT acceptance runs.
+            if (mutateData) { flit.data[0] ^= 1; mutateData = false; }
             requester->receiveData(flit);
         }
         if (dut.io_upSnp_valid && dut.io_upSnp_ready)
@@ -277,10 +323,11 @@ int main(int argc, char** argv) {
     try {
         const unsigned seed = argc > 1 ? std::stoul(argv[1]) : 42;
         if (!seed) throw std::invalid_argument("seed must be nonzero");
+        const bool randomized = argc > 3 && std::string(argv[3]) == "random-read";
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);
         auto config = LoadTestConfig([&](TLLocalConfig& config) {
-            config.seed = seed; config.coreCount = 1; config.masterCountPerCoreTLC = 1; config.masterCountPerCoreTLUL = 1;
+            config.seed = seed; config.coreCount = 1; config.masterCountPerCoreTLC = 1; config.masterCountPerCoreTLUL = randomized ? 3 : 1;
             config.memoryStart = 0x1000; config.memoryEnd = 0x2000; config.memoryPortCount = 1;
             config.memoryCycleUnit = 1; config.memoryReadLatency = 4; config.memoryWriteLatency = 4;
             config.memoryReadDepth = 16; config.memoryWriteDepth = 8; config.maximumCycle = 10000;
@@ -299,7 +346,9 @@ int main(int argc, char** argv) {
         dut.io_flush = 0;
         for (unsigned i = 0; i < 8; ++i) { edge(false); edge(true); }
         dut.reset = 0;
-        DutAdapter adapter(dut, simulation, output);
+        const std::string replay = argc > 4 && std::string(argv[4]) != "-" ? argv[4] : "";
+        const bool mutation = argc > 5 && std::string(argv[5]) == "data-error";
+        DutAdapter adapter(dut, simulation, output, randomized, replay, mutation);
         TLSequencer sequencer;
         sequencer.InitializeProtocol(config, adapter);
         uint64_t cycle = 8;
@@ -317,8 +366,8 @@ int main(int argc, char** argv) {
         const bool passed = sequencer.IsFinished() && adapter.passed();
         sequencer.Finalize();
         dut.final(); waveform.close();
-        std::printf("profile=deterministic-read seed=%llu cycles=%llu independent_board=%s trace=%s\n",
-                    (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
+        std::printf("profile=%s seed=%llu cycles=%llu independent_board=%s trace=%s\n",
+                    randomized ? "random-read" : "deterministic-read", (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
         return passed && !sequencer.IsFailed() ? 0 : 1;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());

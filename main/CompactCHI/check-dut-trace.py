@@ -5,12 +5,25 @@ from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
+randomized = sys.argv[2:] == ["random-read"]
 rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
 seed = rows[0]["seed"]
 events = rows[1:]
 assert all(r["sim_time"] == 2 * r["cycle"] for r in events)
 assert [r["cycle"] for r in events] == sorted(r["cycle"] for r in events)
 requests = {}
+held = {}
+for row in events:
+    direction = row["direction"]
+    fields = {key: value for key, value in row.items()
+              if key not in ("cycle", "sim_time", "ready", "handshake")}
+    if direction in held:
+        previousCycle, previousFields = held[direction]
+        assert row["cycle"] == previousCycle + 1 and fields == previousFields, (
+            direction, row["cycle"], "offered valid/flit changed under stall")
+    if row["valid"] and not row["ready"]: held[direction] = row["cycle"], fields
+    else: held.pop(direction, None)
+assert not held, "terminal stalled flit was not consumed"
 beats = {}
 acks = {}
 latency = {}
@@ -44,7 +57,13 @@ for row in events:
     elif direction == "cchi_rx_rsp" and row["opcode"] == 0:
         key = acks.pop((row["node"], row["txn_id"]))
         assert beats[key] == {0, 1}
-assert len(requests) == 4 and len(beats) == 4 and not acks
+expected_requests = 96 if randomized else 4
+assert len(requests) == expected_requests and len(beats) == expected_requests and not acks
+if randomized:
+    assert {key[0] for key in requests} == {0, 1, 2, 3}
+    for (node, txn), request in requests.items():
+        if node in (0, 3): assert request["opcode"] == 3
+        else: assert request["opcode"] == 16 and request["address"] == 0x1000 + (node - 1) * 64
 assert all(b == {0, 1} for b in beats.values())
 # Assert that intended separated completion and retry stimulus actually fired.
 assert any(r["direction"] == "chi_rx_rsp" and r["opcode"] == 11 and r["handshake"] for r in events)
@@ -74,7 +93,8 @@ def check_time():
         expected = {prefix + "_valid": int(row["valid"]), prefix + "_ready": int(row["ready"]),
                     prefix + "_bits_txnID": row["txn_id"], prefix + "_bits_srcID": row["node"],
                     prefix + "_bits_opcode": row["opcode"]}
-        for field, suffix in (("dbid", "dbID"), ("data_id", "dataID"), ("resp", "resp"), ("resp_err", "respErr")):
+        for field, suffix in (("dbid", "dbID"), ("data_id", "dataID"), ("resp", "resp"),
+                              ("resp_err", "respErr"), ("data_source", "dataSource")):
             if row[field] is not None:
                 expected[prefix + "_bits_" + suffix] = row[field]
         if prefix + "_bits_tgtID" in symbols:
@@ -119,8 +139,13 @@ with (root / "waveform.vcd").open() as waveform:
             values[fields[1]] = int(value[1:], 2) if not any(c in value.lower() for c in "xz") else None
     check_time()
 assert not by_time and checked == len(events)
-evidence = {"profile": "deterministic-read", "seed": seed, "requestCount": 4,
+evidence = {"profile": "random-read" if randomized else "deterministic-read", "seed": seed,
+            "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
             "scope": "limited normal read/upgrade profile; no full alignment claim"}
+if latency:
+    samples = sorted(latency.values())
+    evidence["latencySummaryCycles"] = {"min": samples[0], "max": samples[-1],
+        "p50": samples[(len(samples) - 1) // 2], "p95": samples[(len(samples) - 1) * 95 // 100]}
 (root / "trace-evidence.json").write_text(json.dumps(evidence, indent=2))
-print(f"seed={seed}: independent read data, obligations and {checked} exact VCD event samples passed; latencies={latency}")
+print(f"seed={seed}: independent {expected_requests}-read data/obligations and {checked} exact VCD samples passed; latency={evidence.get('latencySummaryCycles')}")
