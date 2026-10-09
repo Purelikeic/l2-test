@@ -22,6 +22,7 @@ struct EbResponse {
     unsigned source, target, txn, opcode, dbid, resp;
     bool traceTag;
     unsigned pCrdType = 0;
+    unsigned fwdState = 0, respErr = 0;
 };
 struct EbData {
     unsigned source, target, txn, opcode, dbid, home, dataId, resp;
@@ -29,6 +30,7 @@ struct EbData {
     std::array<uint8_t, 32> data{};
     uint32_t byteEnable = 0xffffffffU;
     unsigned respErr = 0;
+    unsigned fwdState = 0;
 };
 struct HomePlan {
     bool separated = false;

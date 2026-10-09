@@ -359,6 +359,14 @@ compactchi-eb-home-test:
 		-o $(COMPACTCHI_CHECK_DIR)/eb-home-test
 	$(COMPACTCHI_CHECK_DIR)/eb-home-test
 
+.PHONY: compactchi-lower-snoop-test
+compactchi-lower-snoop-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/LowerSnoopBoardTest.cpp \
+		$(CURDIR)/main/CompactCHI/LowerSnoopBoard.cpp $(CURDIR)/main/Base/TLGlobal.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/lower-snoop-test
+	$(COMPACTCHI_CHECK_DIR)/lower-snoop-test
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
