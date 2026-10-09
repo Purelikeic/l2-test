@@ -304,6 +304,14 @@ compactchi-home-memory-test:
 		$(CURDIR)/main/Base/TLGlobal.cpp -o $(COMPACTCHI_CHECK_DIR)/home-memory-test
 	$(COMPACTCHI_CHECK_DIR)/home-memory-test
 
+.PHONY: compactchi-config-test
+compactchi-config-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/ConfigTest.cpp \
+		$(CURDIR)/main/System/TLConfig.cpp $(CURDIR)/main/Base/TLGlobal.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/config-test
+	$(COMPACTCHI_CHECK_DIR)/config-test $(COMPACTCHI_CHECK_DIR)
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
