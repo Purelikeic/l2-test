@@ -332,6 +332,14 @@ compactchi-sequencer-test:
 		-o $(COMPACTCHI_CHECK_DIR)/sequencer-test
 	$(COMPACTCHI_CHECK_DIR)/sequencer-test $(COMPACTCHI_CHECK_DIR)/absent-sequencer.ini
 
+.PHONY: compactchi-trace-test
+compactchi-trace-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/CanonicalTraceTest.cpp \
+		$(CURDIR)/main/CompactCHI/CanonicalTrace.cpp -o $(COMPACTCHI_CHECK_DIR)/trace-test
+	$(COMPACTCHI_CHECK_DIR)/trace-test $(COMPACTCHI_CHECK_DIR)/canonical-test
+	python3 $(CURDIR)/main/CompactCHI/check-canonical-trace.py $(COMPACTCHI_CHECK_DIR)/canonical-test
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert -j $(THREADS_BUILD) --top-module L2Cache \
