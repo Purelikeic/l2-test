@@ -34,7 +34,15 @@ for variant in ("latest-overwrites-stale", "drop-model", "undefined-without-clie
     elif variant == "drop-model": golden.pop()
     elif variant == "undefined-without-client": metas[1]["entries"][2]["client"] = False
     else: metas[2]["entries"][0].update(state=2, tag=100)
-    try: check(metas,rows,resources,golden,undefined)
+    try: check(metas,rows,resources,golden,undefined,transitions)
     except AssertionError: rejected += 1
     else: raise AssertionError("DataStorage accepted " + variant)
-print("DataStorage independent host checker: stale/latest/no-data versions, 16 slots and", rejected, "mutations passed")
+for bad in (
+    [dict(address=4096, transitions=["initial", "writeback"]) , *transitions[1:]],
+    [dict(address=4096, transitions=["initial", "cmo-or-eviction-discard"]), *transitions[1:]],
+    [dict(address=4096, transitions=["refill"]), *transitions[1:]],
+    [transitions[0], transitions[1], dict(address=5248, transitions=["initial", "refill"])]):
+    try: check(directory,data,resources,versions,undefined,bad)
+    except AssertionError: rejected += 1
+    else: raise AssertionError("DataStorage accepted an invalid transition sequence")
+print("DataStorage independent host checker: stale/latest/no-data versions, transition order, 16 slots and", rejected, "mutations passed")

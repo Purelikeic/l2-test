@@ -23,10 +23,19 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
     known = {r["address"]: bytes.fromhex(r["data"]) for r in versions}
     assert len(known) == len(versions) and all(len(data) == line for data in known.values())
     transition_map = {r["address"]: r["transitions"] for r in transitions}
+    allowed = {"initial", "refill", "snoop-data", "snoop-no-data", "makeunique-no-data", "cmo-or-eviction-discard"}
     for address in known:
-        assert address in transition_map and any(kind in transition_map[address] for kind in ("refill", "snoop-data", "writeback")), (address, "version lacks an independent storage transition")
+        assert address in transition_map and any(kind in transition_map[address] for kind in ("refill", "snoop-data")), (address, "known version lacks a transition ledger")
     for address in undefined:
-        assert "makeunique-no-data" in transition_map.get(address, []), (address, "undefined storage lacks MakeUnique transition")
+        assert address in transition_map, (address, "undefined version lacks a transition ledger")
+    for address, sequence in transition_map.items():
+        assert sequence and sequence[0] == "initial" and set(sequence) <= allowed, (address, sequence)
+        stores = [i for i, kind in enumerate(sequence) if kind in ("refill", "snoop-data")]
+        discards = [i for i, kind in enumerate(sequence) if kind == "cmo-or-eviction-discard"]
+        if address in known:
+            assert stores and (not discards or max(stores) > max(discards)), (address, sequence)
+        if address in undefined:
+            assert not stores and "makeunique-no-data" in sequence and (not discards or sequence[-1] == "cmo-or-eviction-discard"), (address, sequence)
     checked, unknown, invalid = 0, [], 0
     for index, (meta, data) in enumerate(zip(directory, samples)):
         assert (meta["set"], meta["way"]) == (data["set"], data["way"]) == divmod(index, ways)
