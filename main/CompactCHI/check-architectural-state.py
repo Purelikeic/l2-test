@@ -10,6 +10,7 @@ def check(root, events, seed, topo, terminal=None):
     actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
     latest, memory, devices, copies = {}, {}, {}, {}
     l2_data, down_reads, undefined_storage = {}, {}, set()
+    transitions = defaultdict(list)
     requests, snoops, acks, writes, write_dbids = {}, {}, {}, {}, {}
     roles = {n["id"]: n["kind"] for n in topo["nodes"]}
 
@@ -18,6 +19,7 @@ def check(root, events, seed, topo, terminal=None):
         if address not in latest:
             latest[address] = bytes(((address >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
             memory[address] = latest[address]
+            transitions[address].append("initial")
         return address
 
     # prepare() initializes cache lines even when an API attempt is Deferred.
@@ -70,6 +72,7 @@ def check(root, events, seed, topo, terminal=None):
                 if a["kind"] == 2:
                     l2_data.pop(address, None)
                     undefined_storage.add(address) # MakeUnique installs permission without data.
+                    transitions[address].append("makeunique-no-data")
             elif d == "cchi_tx_dat":
                 key = r["target"], r["txn_id"]
                 q = requests[key]
@@ -118,6 +121,9 @@ def check(root, events, seed, topo, terminal=None):
                     assert op == (4 if a["kind"] in (5, 6, 7) else 1)
                     if a["kind"] == 7: latest[a["address"]] = memory[a["address"]]
                     if a["kind"] == 5: assert all(p != 3 for (n, addr), (p, data) in copies.items() if addr == a["address"])
+                    if a["kind"] in (3, 4, 7):
+                        l2_data.pop(a["address"], None)
+                        transitions[a["address"]].append("cmo-or-eviction-discard")
                     if a["kind"] in (6, 7): assert all(addr != a["address"] for n, addr in copies)
                     if a["kind"] in (4, 10): assert q["beats"] == ({0, 1} if a["size"] == 6 else {(a["address"] >> 5) & 1})
                     retire(key)
@@ -148,6 +154,7 @@ def check(root, events, seed, topo, terminal=None):
                     if s["beats"] == {0, 1}:
                         if r["resp"] & 3:
                             l2_data[s["address"]] = latest[s["address"]]
+                            transitions[s["address"]].append("snoop-data")
                             undefined_storage.discard(s["address"])
                         snoop_finish(key, r["resp"])
                 else:
@@ -158,6 +165,7 @@ def check(root, events, seed, topo, terminal=None):
                     q["beats"].add(beat)
                     if a["kind"] == 4 and q["beats"] == {0, 1}:
                         l2_data[a["address"]] = latest[a["address"]]
+                        transitions[a["address"]].append("refill")
                         undefined_storage.discard(a["address"])
                         copies.pop((owner[0], a["address"]), None)
                         if q["complete"]: retire(owner)
@@ -182,6 +190,7 @@ def check(root, events, seed, topo, terminal=None):
                 q["beats"].add(beat)
                 if q["beats"] == {0, 1}:
                     l2_data[q["address"]] = q["expected"]
+                    transitions[q["address"]].append("writeback")
                     undefined_storage.discard(q["address"])
                     del down_reads[key]
             elif d == "chi_rx_rsp" and op == 4:
@@ -231,6 +240,7 @@ def check(root, events, seed, topo, terminal=None):
     assert terminal["observed"] == expected, "actual Requester/Home terminal storage differs from independent replay"
     assert terminal["cycle"] >= max(by_cycle)
     return dict(l2UndefinedStorage=sorted(undefined_storage),
+                l2Transitions=[dict(address=a, transitions=transitions[a]) for a in sorted(transitions)],
                 l2DataVersions=[dict(address=a, data=data.hex()) for a, data in sorted(l2_data.items())],
                 requesterFootprint=[dict(node=n, address=a, clientState=1 if p == 1 else 2) for (n, a), (p, data) in sorted(copies.items())],
                 requesterCopies=len(copies), memoryLines=len(memory), deviceLines=len(devices),

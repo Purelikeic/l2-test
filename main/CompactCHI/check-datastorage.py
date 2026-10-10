@@ -6,7 +6,7 @@ import runpy
 FIELDS = runpy.run_path(str(Path(__file__).with_name("check-resources.py")))["FIELDS"]
 
 
-def check(directory_rows, rows, resources, versions, undefined=()):
+def check(directory_rows, rows, resources, versions, undefined=(), transitions=()):
     geometry, *directory = directory_rows
     data_geometry, *samples = rows
     assert geometry == data_geometry
@@ -22,6 +22,11 @@ def check(directory_rows, rows, resources, versions, undefined=()):
         assert r["ready"] and all(r[field] == 0 for field in FIELDS)
     known = {r["address"]: bytes.fromhex(r["data"]) for r in versions}
     assert len(known) == len(versions) and all(len(data) == line for data in known.values())
+    transition_map = {r["address"]: r["transitions"] for r in transitions}
+    for address in known:
+        assert address in transition_map and any(kind in transition_map[address] for kind in ("refill", "snoop-data", "writeback")), (address, "version lacks an independent storage transition")
+    for address in undefined:
+        assert "makeunique-no-data" in transition_map.get(address, []), (address, "undefined storage lacks MakeUnique transition")
     checked, unknown, invalid = 0, [], 0
     for index, (meta, data) in enumerate(zip(directory, samples)):
         assert (meta["set"], meta["way"]) == (data["set"], data["way"]) == divmod(index, ways)
@@ -49,7 +54,7 @@ def check(directory_rows, rows, resources, versions, undefined=()):
                 scope="terminal bytes of independently modeled refill/retained-Snoop/WriteBack versions; undefined MakeUnique storage and full residency remain open")
 
 
-def mutations(directory, rows, resources, versions, undefined=()):
+def mutations(directory, rows, resources, versions, undefined=(), transitions=()):
     variants = []
     for mutate in (
         lambda r: r.pop(),
@@ -81,7 +86,7 @@ def mutations(directory, rows, resources, versions, undefined=()):
         else: continue
         break
     for changed, resource in variants:
-        try: check(directory, changed, resource, versions, undefined)
+        try: check(directory, changed, resource, versions, undefined, transitions)
         except (AssertionError, KeyError, ValueError): pass
         else: raise AssertionError("DataStorage checker accepted a mutated line/scan/drain")
     return len(variants)
