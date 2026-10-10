@@ -130,12 +130,19 @@ assert len(resource_by_time) == len(resource_rows)
 resource_fields = resource_tools["FIELDS"]
 directory_tools = runpy.run_path(str(Path(__file__).with_name("check-directory.py")))
 directory_rows = [json.loads(line) for line in (root / "directory.jsonl").read_text().splitlines()]
+data_rows = [json.loads(line) for line in (root / "datastorage.jsonl").read_text().splitlines()]
+assert directory_rows[0] == data_rows[0] and len(directory_rows) == len(data_rows)
 expected_clients = {(e["node"], e["address"]): e["clientState"] for e in architectural_evidence["requesterFootprint"]}
 roles = {n["id"]: n["kind"] for n in topo["nodes"]}
-directory_evidence = directory_tools["check"](directory_rows, resource_rows, expected_clients, roles)
+directory_evidence = directory_tools["check"](directory_rows, resource_rows, expected_clients, roles, data_rows[-1]["cycle"])
 directory_evidence["mutationRejections"] = directory_tools["mutations"](directory_rows, resource_rows, expected_clients, roles)
-assert not any(r["cycle"] >= directory_rows[1]["cycle"] for r in events), "Directory scan overlaps live channel traffic"
+data_tools = runpy.run_path(str(Path(__file__).with_name("check-datastorage.py")))
+data_evidence = data_tools["check"](directory_rows, data_rows, resource_rows, architectural_evidence["l2DataVersions"], architectural_evidence["l2UndefinedStorage"])
+data_evidence["mutationRejections"] = data_tools["mutations"](directory_rows, data_rows, resource_rows, architectural_evidence["l2DataVersions"], architectural_evidence["l2UndefinedStorage"])
+assert not any(r["cycle"] >= directory_rows[1]["cycle"] for r in events), "Directory/DataStorage scan overlaps live channel traffic"
 directory_by_time = {row["sim_time"]: row for row in directory_rows[1:]}
+data_by_time = {row["sim_time"]: row for row in data_rows[1:]}
+directory_by_coordinate = {(row["set"], row["way"]): row for row in directory_rows[1:]}
 directory_geometry = directory_rows[0]
 ports = {
     "cchi_rx_req": "req", "cchi_rx_evt": "evt", "cchi_rx_rsp": "upRspIn", "cchi_rx_dat": "upDatIn",
@@ -152,9 +159,10 @@ time = None
 checked = 0
 resource_checked = 0
 directory_checked = 0
+data_checked = 0
 
 def check_time():
-    global checked, resource_checked, directory_checked
+    global checked, resource_checked, directory_checked, data_checked
     if time in directory_by_time:
         row = directory_by_time.pop(time)
         expected = {"io_directorySet": row["set"], "io_directoryWay": row["way"]}
@@ -168,6 +176,23 @@ def check_time():
             assert signal in symbols and values.get(symbols[signal]) == value, (time, signal, "Directory log differs from actual storage VCD")
         assert values[symbols["clock"]] == 0
         directory_checked += 1
+    if time in data_by_time:
+        row = data_by_time.pop(time)
+        for key in ("set", "way"):
+            signal = "io_directory" + key.capitalize()
+            assert values.get(symbols[signal]) == row[key], (time, signal, "DataStorage selector differs from VCD")
+        stable_meta = directory_by_coordinate[row["set"], row["way"]]
+        for slice_id, entry in enumerate(stable_meta["entries"]):
+            for key in ("tag", "state", "client", "clientState", "clientID"):
+                signal = f"io_directoryEntries_{slice_id}_{key}"
+                assert values.get(symbols[signal]) == int(entry[key]), (time, signal, "Directory changed between terminal sweeps")
+        for slice_id, line in enumerate(row["lines"]):
+            signal = f"io_dataStorageLines_{slice_id}"
+            assert signal in symbols and values.get(symbols[signal]) == int.from_bytes(bytes.fromhex(line["data"]), "little"), (time, signal, "DataStorage log differs from actual storage VCD")
+            error = f"io_dataStorageErrors_{slice_id}"
+            assert error in symbols and values.get(symbols[error]) == int(line["error"]), (time, error, "DataStorage error differs from VCD")
+        assert values[symbols["clock"]] == 0
+        data_checked += 1
     if time in resource_by_time:
         row = resource_by_time.pop(time)
         for field in (*resource_fields, "ready"):
@@ -233,14 +258,17 @@ with (root / "waveform.vcd").open() as waveform:
 assert not by_time and checked == len(events)
 assert not resource_by_time and resource_checked == len(resource_rows)
 assert not directory_by_time and directory_checked == len(directory_rows) - 1
+assert not data_by_time and data_checked == len(data_rows) - 1
 directory_evidence["waveformAlignedSlots"] = directory_checked * directory_geometry["slices"]
+data_evidence["waveformAlignedSlots"] = data_checked * directory_geometry["slices"]
 resource_evidence["waveformAlignedSamples"] = resource_checked
 resource_evidence["mutationRejections"] = resource_mutations
 evidence = {"profile": profile, "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
             "scope": scopes[profile], "nodeEvidence": node_evidence, "resourceEvidence": resource_evidence,
-            "architecturalEvidence": architectural_evidence, "directoryEvidence": directory_evidence}
+            "architecturalEvidence": architectural_evidence, "directoryEvidence": directory_evidence,
+            "dataStorageEvidence": data_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

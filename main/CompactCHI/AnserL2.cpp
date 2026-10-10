@@ -12,6 +12,7 @@
 #include "NodeAgent.hpp"
 #include "ResourceMonitor.hpp"
 #include "DirectoryMonitor.hpp"
+#include "DataStorageMonitor.hpp"
 #include <set>
 #include <iomanip>
 #include <algorithm>
@@ -39,7 +40,8 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     std::unique_ptr<compactchi::CanonicalTrace> trace;
     std::unique_ptr<compactchi::ResourceMonitor> resources;
     std::unique_ptr<compactchi::DirectoryMonitor> directory;
-    bool directoryScan = false;
+    std::unique_ptr<compactchi::DataStorageMonitor> dataStorage;
+    bool directoryScan = false, directoryChecked = false, dataStorageScan = false;
     compactchi::ResourceSnapshot resourceSnapshot() const {
         return {{dut.io_resources_mshrs, dut.io_resources_responses, dut.io_resources_writebacks,
             dut.io_resources_requests, dut.io_resources_queues, dut.io_resources_pipeline,
@@ -163,11 +165,18 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
             directoryScan = true; // Sample the first indexed row on the next real cycle.
             return;
         }
-        if (directoryScan && directory->complete()) {
+        if (directoryScan && directory->complete() && !directoryChecked) {
             compactchi::DirectoryClients expectedClients;
             for (const auto& [key, copy] : board->expectedTerminal().requesters)
                 expectedClients.emplace(key, copy.permission == compactchi::Permission::SC ? 1U : 2U);
             directory->finish(expectedClients);
+            directoryChecked = true;
+            directoryScan = false;
+            dataStorageScan = true;
+            return;
+        }
+        if (dataStorageScan && dataStorage->complete()) {
+            dataStorage->finish();
             resources->finish();
             if (victimProfile) {
                 const auto expected = compactchi::VictimProfile::dirty(cfg->seed, cfg->memoryStart);
@@ -262,6 +271,8 @@ public:
         resources = std::make_unique<compactchi::ResourceMonitor>((output / "resources.jsonl").string());
         directory = std::make_unique<compactchi::DirectoryMonitor>((output / "directory.jsonl").string(),
             dut.io_directorySets, dut.io_directoryWays, dut.io_directorySlices, dut.io_directoryLineBytes, dut.io_directoryAddrBits);
+        dataStorage = std::make_unique<compactchi::DataStorageMonitor>((output / "datastorage.jsonl").string(),
+            dut.io_directorySets, dut.io_directoryWays, dut.io_directorySlices, dut.io_directoryLineBytes, dut.io_directoryAddrBits);
         victim = compactchi::VictimProfile(config.memoryStart, config.memoryEnd);
         std::ofstream topology(output / "topology.json");
         topology << "{\"coreCount\":" << config.coreCount << ",\"tlcPerCore\":" << config.masterCountPerCoreTLC
@@ -288,6 +299,20 @@ public:
                     {dut.io_directoryEntries_2_tag, dut.io_directoryEntries_2_state, dut.io_directoryEntries_2_clientState, dut.io_directoryEntries_2_clientID, bool(dut.io_directoryEntries_2_client)},
                     {dut.io_directoryEntries_3_tag, dut.io_directoryEntries_3_state, dut.io_directoryEntries_3_clientState, dut.io_directoryEntries_3_clientID, bool(dut.io_directoryEntries_3_client)}
                 }});
+        }
+        if (dataStorageScan) {
+            auto line = [](const auto& wide) {
+                compactchi::DataStorageLine result{};
+                for (unsigned word = 0; word < 16; ++word)
+                    for (unsigned byte = 0; byte < 4; ++byte)
+                        result[word * 4 + byte] = uint8_t(wide[word] >> (byte * 8));
+                return result;
+            };
+            dataStorage->sample(cycle(), simulation.time() - 1, terminalReady(), dut.io_directorySet, dut.io_directoryWay,
+                std::array<compactchi::DataStorageLine, 4>{{line(dut.io_dataStorageLines_0), line(dut.io_dataStorageLines_1),
+                    line(dut.io_dataStorageLines_2), line(dut.io_dataStorageLines_3)}},
+                std::array<bool, 4>{{bool(dut.io_dataStorageErrors_0), bool(dut.io_dataStorageErrors_1),
+                    bool(dut.io_dataStorageErrors_2), bool(dut.io_dataStorageErrors_3)}});
         }
         using C = compactchi::Channel;
         observe(C::CchiRxReq, dut.io_req_valid, dut.io_req_ready, dut.io_req_bits_srcID,
@@ -410,8 +435,8 @@ public:
     void fuzz() override { maintain(); }
     void updateSignals() override { memory->updateSignals(); }
     void drive() {
-        dut.io_directorySet = directoryScan ? directory->set() : 0;
-        dut.io_directoryWay = directoryScan ? directory->way() : 0;
+        dut.io_directorySet = (directoryScan || dataStorageScan) ? (directoryScan ? directory->set() : dataStorage->set()) : 0;
+        dut.io_directoryWay = (directoryScan || dataStorageScan) ? (directoryScan ? directory->way() : dataStorage->way()) : 0;
         dut.io_l2NodeId = 1; dut.io_homeNodeId = 8;
         dut.io_flush = 0; dut.io_prefetchTask_valid = 0;
         dut.io_evt_valid = requester->eventValid();
@@ -493,7 +518,7 @@ public:
         if (successful && (!requester->idle() || !board->idle() || !home->idle()))
             throw std::runtime_error("final DUT profile resources did not drain");
         if (successful) resources->finish();
-        resources.reset(); directory.reset();
+        resources.reset(); directory.reset(); dataStorage.reset();
         trace.reset(); lowerBoard.reset(); home.reset(); memory.reset(); requester.reset(); board.reset();
     }
 };

@@ -7,7 +7,7 @@ import runpy
 FIELDS = runpy.run_path(str(Path(__file__).with_name("check-resources.py")))["FIELDS"]
 
 
-def check(rows, resources, expected, roles):
+def check(rows, resources, expected, roles, terminal_cycle=None):
     geometry, *samples = rows
     sets, ways, slices, line, bits = (geometry[k] for k in ("sets", "ways", "slices", "lineBytes", "addrBits"))
     assert geometry["schema"] == 1 and sets > 0 and ways > 0
@@ -23,7 +23,10 @@ def check(rows, resources, expected, roles):
     for cycle in range(start - 20, start + len(samples)):
         r = by_cycle[cycle]
         assert r["ready"] and all(r[k] == 0 for k in FIELDS), "Directory sweep preceded/lost resource drain"
-    assert samples[-1]["cycle"] == resources[-1]["cycle"], "Directory sweep is not terminal"
+    if terminal_cycle is None:
+        assert samples[-1]["cycle"] <= resources[-1]["cycle"], "Directory scan exceeds resource observations"
+    else:
+        assert samples[-1]["cycle"] < terminal_cycle <= resources[-1]["cycle"], "Directory scan is not followed by DataStorage terminal scan"
     resident, clients = set(), {}
     for index, row in enumerate(samples):
         assert row["cycle"] == start + index and row["sim_time"] == row["cycle"] * 2

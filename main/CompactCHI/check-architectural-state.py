@@ -9,6 +9,7 @@ def check(root, events, seed, topo, terminal=None):
     assert terminal["schema"] == 1
     actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
     latest, memory, devices, copies = {}, {}, {}, {}
+    l2_data, down_reads, undefined_storage = {}, {}, set()
     requests, snoops, acks, writes, write_dbids = {}, {}, {}, {}, {}
     roles = {n["id"]: n["kind"] for n in topo["nodes"]}
 
@@ -66,6 +67,9 @@ def check(root, events, seed, topo, terminal=None):
                     initialize(address)
                 requests[key] = dict(action=a, beats=set(), dbid=None, resp=None, complete=False)
                 if a["kind"] == 3: copies.pop((key[0], address))
+                if a["kind"] == 2:
+                    l2_data.pop(address, None)
+                    undefined_storage.add(address) # MakeUnique installs permission without data.
             elif d == "cchi_tx_dat":
                 key = r["target"], r["txn_id"]
                 q = requests[key]
@@ -141,7 +145,11 @@ def check(root, events, seed, topo, terminal=None):
                     s = snoops[key]
                     assert beat not in s["beats"] and bytes.fromhex(r["data"]) == latest[s["address"]][beat * 32:(beat + 1) * 32]
                     s["beats"].add(beat)
-                    if s["beats"] == {0, 1}: snoop_finish(key, r["resp"])
+                    if s["beats"] == {0, 1}:
+                        if r["resp"] & 3:
+                            l2_data[s["address"]] = latest[s["address"]]
+                            undefined_storage.discard(s["address"])
+                        snoop_finish(key, r["resp"])
                 else:
                     owners = [k for k, q in requests.items() if k[0] == key[0] and q["dbid"] == key[1] and q["action"]["kind"] in (4, 10)]
                     assert len(owners) == 1
@@ -149,14 +157,33 @@ def check(root, events, seed, topo, terminal=None):
                     assert beat not in q["beats"]
                     q["beats"].add(beat)
                     if a["kind"] == 4 and q["beats"] == {0, 1}:
+                        l2_data[a["address"]] = latest[a["address"]]
+                        undefined_storage.discard(a["address"])
                         copies.pop((owner[0], a["address"]), None)
                         if q["complete"]: retire(owner)
             elif d == "chi_tx_req":
                 if op not in (4, 0x1c, 0x1d): initialize(r["address"])
+                if op in (7, 0x26):
+                    key = r["node"], r["txn_id"]
+                    if key not in down_reads:
+                        down_reads[key] = dict(address=r["address"], expected=memory[r["address"]], beats=set())
+                    else: assert down_reads[key]["address"] == r["address"]
                 if op in (0x17, 0x1b, 0x42, 0x1c, 0x1d):
                     writes[r["node"], r["txn_id"]] = dict(address=r["address"], size=6 if op not in (0x1c, 0x1d) else
                         next(q["action"]["size"] for q in requests.values() if q["action"]["kind"] == 10 and q["action"]["address"] == r["address"]),
                         device=op in (0x1c, 0x1d), beats=set())
+            elif d == "chi_rx_dat" and (r["target"], r["txn_id"]) in down_reads:
+                key = r["target"], r["txn_id"]
+                q = down_reads[key]
+                assert op in (4, 11) and r["data_id"] in (0, 2) and r["resp_err"] == 0
+                beat = r["data_id"] // 2
+                assert beat not in q["beats"]
+                assert bytes.fromhex(r["data"]) == q["expected"][beat * 32:(beat + 1) * 32]
+                q["beats"].add(beat)
+                if q["beats"] == {0, 1}:
+                    l2_data[q["address"]] = q["expected"]
+                    undefined_storage.discard(q["address"])
+                    del down_reads[key]
             elif d == "chi_rx_rsp" and op == 4:
                 writes.pop((r["target"], r["txn_id"]), None) # Clean WriteEvictOrEvict Comp branch.
             elif d == "chi_rx_rsp" and op == 5:
@@ -195,7 +222,7 @@ def check(root, events, seed, topo, terminal=None):
             assert copies[owner][0] in (2, 3)
             latest[a["address"]] = bytes.fromhex(a["data"])
             copies[owner] = (3, latest[a["address"]])
-    assert not requests and not snoops and not acks and not writes and not write_dbids
+    assert not requests and not snoops and not acks and not writes and not write_dbids and not down_reads
     assert all(not queued for queued in intents.values())
     expected = dict(requesters=[dict(node=n, address=a, permission=p, data=data.hex()) for (n, a), (p, data) in sorted(copies.items())],
                     memory=[dict(address=a, data=data.hex()) for a, data in sorted(memory.items())],
@@ -203,7 +230,9 @@ def check(root, events, seed, topo, terminal=None):
     assert terminal["expected"] == expected, "online architectural model differs from independent replay"
     assert terminal["observed"] == expected, "actual Requester/Home terminal storage differs from independent replay"
     assert terminal["cycle"] >= max(by_cycle)
-    return dict(requesterFootprint=[dict(node=n, address=a, clientState=1 if p == 1 else 2) for (n, a), (p, data) in sorted(copies.items())],
+    return dict(l2UndefinedStorage=sorted(undefined_storage),
+                l2DataVersions=[dict(address=a, data=data.hex()) for a, data in sorted(l2_data.items())],
+                requesterFootprint=[dict(node=n, address=a, clientState=1 if p == 1 else 2) for (n, a), (p, data) in sorted(copies.items())],
                 requesterCopies=len(copies), memoryLines=len(memory), deviceLines=len(devices),
                 scope="terminal Requester identity/permission/data and committed Home/device bytes; internal L2 residency remains open")
 

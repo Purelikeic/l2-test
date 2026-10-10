@@ -1,6 +1,36 @@
 # Compact CHI testing
 
-## Current terminal Directory client footprint boundary
+## Current DataStorage terminal version boundary
+
+SRAM/DataStorage expose a current indexed storage read through Slice/top using
+the existing Set/Way selector. This observation does not drive the normal SRAM
+read register, Directory arbitration, admission, FSM, replacement or CHI timing.
+After the full Directory scan, native runs sweep the same coordinates for all
+four 64-byte DataStorage lines. Both sweeps remain drained; endpoint snapshots
+are taken at the final DataStorage/resource sample. datastorage.jsonl records all
+bytes and errors, and the checker aligns every byte to actual top VCD ports.
+
+Expected bytes come from the independent architectural replay, using initialized
+memory, explicit Store/MakeUnique intent and expected Home commitment. Downstream
+refill handshakes select the expected Home snapshot; they never supply expected
+bytes. Retained upstream Snoop data and full WriteBack transfer the independently
+known latest version into expected L2 storage. Local L1 Store does not update the
+L2 stored version. MakeUnique allocates permission without installing data: this
+explicit no-data case is recorded as undefined until a modeled data installation.
+A valid unknown line outside that independently identified case is rejected;
+undefined data must still belong to a Unique client. Invalid-slot SRAM payload
+is not architectural state. Non-client complete residency and full L2-state
+transition modeling remain open.
+
+check-datastorage.py checks the consecutive, coordinate-complete sweep, continued
+resource drain, geometry and independently defined versions. It rejects data
+corruption at both ends of both beats, scan gaps, missing/extra rows, bad errors
+and resource leaks. The host fixture distinguishes stale L2 bytes, dirty installed
+bytes and no-data allocations; it also rejects unmodeled resident versions.
+The retained Directory, Requester/Home and global guard boundaries still apply.
+PBOP/VBOP, second-owner admission and unsupported protocols are unchanged.
+
+## Retained terminal Directory client footprint boundary
 
 Directory exposes a read-only indexed view of current Tag/Meta registers through
 Slice/top. The observation selector does not reserve the functional read port or
