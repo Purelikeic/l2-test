@@ -1,6 +1,7 @@
 #include "ArchitecturalBoard.hpp"
 #include <algorithm>
 #include <cstring>
+#include <iomanip>
 
 namespace compactchi {
 void ArchitecturalBoard::require(bool value, const char* message) {
@@ -324,6 +325,59 @@ void ArchitecturalBoard::controlAck(RequestKey key) {
     lineOwners.erase(c.action.address);
     controls.erase(key);
     store(key.node, c.action.address, c.action.data); // Explicit full-line overwrite, not a data upgrade.
+}
+ArchitecturalState ArchitecturalBoard::expectedTerminal() {
+    require(idle(), "architectural terminal check preceded board drain");
+    ArchitecturalState result;
+    result.memory = memoryExpected;
+    result.devices = deviceExpected;
+    for (const auto& [address, state] : nodes.get()) {
+        require(bool(state->owner) == (state->permission != Permission::I), "inconsistent expected requester owner/permission");
+        if (!state->owner) continue;
+        ResidentLine copy{state->permission, {}};
+        std::copy_n(global.query(&context, address)->data->data, 64, copy.data.begin());
+        result.requesters.emplace(std::make_pair(*state->owner, address), copy);
+    }
+    return result;
+}
+void ArchitecturalBoard::checkTerminal(const ArchitecturalState& observed, std::ostream* evidence) {
+    const auto expected = expectedTerminal();
+    require(observed.requesters == expected.requesters, "terminal requester identity/permission/data mismatch");
+    require(observed.memory == expected.memory, "terminal committed Home memory mismatch");
+    require(observed.devices == expected.devices, "terminal Home device byte state mismatch");
+    if (!evidence) return;
+    auto bytes = [&](const LineData& data) {
+        *evidence << '"';
+        for (const auto byte : data) *evidence << std::hex << std::setw(2) << std::setfill('0') << unsigned(byte);
+        *evidence << std::dec << '"';
+    };
+    auto write = [&](const ArchitecturalState& state) {
+        *evidence << "{\"requesters\":[";
+        bool first = true;
+        for (const auto& [key, copy] : state.requesters) {
+            if (!first) *evidence << ',';
+            first = false;
+            *evidence << "{\"node\":" << key.first << ",\"address\":" << key.second
+                      << ",\"permission\":" << unsigned(copy.permission) << ",\"data\":";
+            bytes(copy.data); *evidence << '}';
+        }
+        *evidence << ']';
+        for (const auto& [name, lines] : {std::make_pair("memory", &state.memory), std::make_pair("devices", &state.devices)}) {
+            *evidence << ",\"" << name << "\":[";
+            first = true;
+            for (const auto& [address, data] : *lines) {
+                if (!first) *evidence << ',';
+                first = false;
+                *evidence << "{\"address\":" << address << ",\"data\":";
+                bytes(data); *evidence << '}';
+            }
+            *evidence << ']';
+        }
+        *evidence << '}';
+    };
+    *evidence << "{\"schema\":1,\"cycle\":" << context.cycle() << ",\"expected\":";
+    write(expected); *evidence << ",\"observed\":"; write(observed); *evidence << "}\n";
+    require(bool(*evidence), "cannot write terminal architectural evidence");
 }
 bool ArchitecturalBoard::idle() {
     return controls.empty() && pending.get().empty() && acks.empty() && lineOwners.empty() &&

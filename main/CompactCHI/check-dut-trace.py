@@ -117,8 +117,12 @@ else:
         forwarded = [r for r in events if r["direction"] == "chi_tx_rsp" and r["txn_id"] == 2049 and r["handshake"]]
         assert len(forwarded) == 1 and forwarded[0]["opcode"] == 9 and forwarded[0]["resp"] == 0 and forwarded[0]["forward_state"] == 2
 
+architectural_tools = runpy.run_path(str(Path(__file__).with_name("check-architectural-state.py")))
+architectural_evidence = architectural_tools["check"](root, events, seed, topo)
+architectural_evidence["mutationRejections"] = architectural_tools["mutations"](root, events, seed, topo)
 resource_tools = runpy.run_path(str(Path(__file__).with_name("check-resources.py")))
 resource_rows = [json.loads(line) for line in (root / "resources.jsonl").read_text().splitlines()]
+assert json.loads((root / "architectural-state.json").read_text())["cycle"] == resource_rows[-1]["cycle"], "architectural observation is not at the terminal resource sample"
 resource_evidence = resource_tools["check"](resource_rows)
 resource_mutations = resource_tools["mutations"](resource_rows)
 resource_by_time = {row["sim_time"]: row for row in resource_rows}
@@ -210,7 +214,8 @@ resource_evidence["mutationRejections"] = resource_mutations
 evidence = {"profile": profile, "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
-            "scope": scopes[profile], "nodeEvidence": node_evidence, "resourceEvidence": resource_evidence}
+            "scope": scopes[profile], "nodeEvidence": node_evidence, "resourceEvidence": resource_evidence,
+            "architecturalEvidence": architectural_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

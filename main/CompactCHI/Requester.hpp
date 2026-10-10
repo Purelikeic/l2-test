@@ -84,6 +84,7 @@ public:
     bool snoopReady() const;
     void receiveSnoop(const SnoopFlit& snoop);
     void store(unsigned node, uint64_t address, const LineData& data);
+    std::map<std::pair<unsigned, uint64_t>, ResidentLine> terminalCopies() const;
     bool idle() const;
 };
 } // namespace compactchi

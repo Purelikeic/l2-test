@@ -111,6 +111,10 @@ public:
     void receiveCopyback(const EbData& flit);
     bool snoopCommitReady() const { return contexts.size() < capacity && memory.ready(true); }
     void commitSnoopData(uint64_t address, const chi_agent::Line& data);
+    std::map<uint64_t, chi_agent::Line> terminalDevices() const {
+        require(idle(), "Home terminal observation preceded drain");
+        return deviceMemory;
+    }
     bool idle() const;
 };
 } // namespace compactchi

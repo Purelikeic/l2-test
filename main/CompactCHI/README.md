@@ -1,6 +1,31 @@
 # Compact CHI testing
 
-## Current DUT resource observation and terminal drain
+## Current terminal architectural scoreboard boundary
+
+Successful native finish now also requires exact terminal Requester/Home storage
+agreement with ArchitecturalBoard. The observed requester map is copied from
+Requester storage, including every identity, line, permission and 64-byte value.
+Every initialized cache line is read from the actual MemoryAgent, and the whole
+accessed Home device map is copied separately. Expected versions remain driven
+by initialized data, independently checked actions and validated memory commits.
+Latest cache data and committed memory are separate: clean/dirty requester data
+need not equal Home bytes. ReadOnce and MMIO create no persistent owner.
+
+architectural-state.json records both terminal maps at the successful cycle.
+check-architectural-state.py independently replays action intent and canonical
+handshakes, derives requester residency/permissions/latest data, copyback and
+lower-Snoop Home versions, CMO discard and MMIO masked bytes, and checks both
+maps. It rejects missing/extra entries and mutated identities/permissions/data.
+The VCD/channel and continuous resource-drain checks remain required alongside
+this check. The terminal map is not a source of expected replay values.
+
+This is a bounded endpoint architectural check. Internal L2 Directory/DataStorage
+residency, complete external forward-node state, all nesting/error/concurrency
+and full ARI/unified equivalence remain open. Second persistent owners remain
+Deferred; WriteUnique/Exclusive/Atomic remain Illegal; global-test remains guarded.
+PBOP/VBOP and functional protocols are unchanged.
+
+## Historical DUT resource observation and terminal drain
 
 ResourceStatus is a read-only RTL summary of occupied ownership layers, exported
 by Slice/top. It includes live MSHR and upstream response contexts, all WBF and

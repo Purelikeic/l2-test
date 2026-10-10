@@ -55,6 +55,10 @@ int main() {
         auto dirty = data;
         dirty[0] ^= 0xa5;
         node.store(2, 0x1000, dirty);
+        compactchi::ArchitecturalState stableDirty;
+        stableDirty.requesters = node.terminalCopies();
+        stableDirty.memory = {{0x1000, data}, {0x1040, data}};
+        board.checkTerminal(stableDirty); // Dirty residency is allowed with older committed Home bytes.
         node.enqueue({3, 1, 7, 3, 0x1040, false});
         // No REQ handshake occurs while the reverse Snoop is serviced.
         node.receiveSnoop({1, 2, 99, 2, 0x1000, true});
@@ -80,7 +84,12 @@ int main() {
         node.responseAccepted();
         require(node.idle() && board.idle() && board.state(0x1000).permission == compactchi::Permission::I,
                 "discard Snoop left resource ownership");
-        std::puts("Requester: node/TxnID, DBID CompAck, dirty Snoop, independent queues and backpressure passed");
+        auto stable = board.expectedTerminal();
+        stable.requesters = node.terminalCopies();
+        stable.memory = {{0x1000, data}, {0x1040, data}};
+        board.checkTerminal(stable);
+        require(stable.requesters.empty(), "Invalid/ReadOnce copies leaked into terminal requester storage");
+        std::puts("Requester: node/TxnID, DBID CompAck, dirty Snoop, independent queues, backpressure and actual terminal copies passed");
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());

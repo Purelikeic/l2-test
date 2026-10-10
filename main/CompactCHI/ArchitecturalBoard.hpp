@@ -7,11 +7,23 @@
 #include <map>
 #include <optional>
 #include <stdexcept>
+#include <ostream>
 
 namespace compactchi {
 using LineData = std::array<uint8_t, DATASIZE>;
 enum class Permission { I, SC, UC, UD };
 enum class ReadClass { Once, Shared, Unique };
+
+struct ResidentLine {
+    Permission permission;
+    LineData data;
+    bool operator==(const ResidentLine&) const = default;
+};
+// Stable architectural storage, separate from all transport/resource ownership.
+struct ArchitecturalState {
+    std::map<std::pair<unsigned, uint64_t>, ResidentLine> requesters;
+    std::map<uint64_t, LineData> memory, devices;
+};
 
 struct RequestKey {
     unsigned node, txn;
@@ -42,12 +54,11 @@ struct SnoopExpectation {
     LineData expected;
 };
 
-/** Initial independent read/node obligations on the original scoreboard storage.
- * Rules: CPL2 tl2chi/MainPipe.scala need_probe_s3_a and client metadata;
- * Compact CHI guide 8.2/10.2 legal permissions, ReadOnce persistence and CompAck.
- * Dirty data is authoritative in GlobalBoard, independent of Home memory.
- * This node component has no replacement, retry, CMO, DCT or internal L2-state
- * model yet and cannot establish full architectural alignment on its own. */
+/** Independent data/permission and terminal node/Home obligations.
+ * Rules: CPL2 tl2chi/MainPipe.scala client metadata and Compact CHI guide
+ * 7, 8 and 10. Latest cache data and committed Home data are separate versions.
+ * Terminal observations never feed expected data or functional admission.
+ * Internal L2 residency and complete protocol/topology modeling remain open. */
 class ArchitecturalBoard {
     TLLocalContext& context;
     unsigned nodeCount;
@@ -99,6 +110,8 @@ public:
     std::pair<LineData, uint64_t> deviceWriteExpectation(uint64_t address);
     void memoryCommitted(uint64_t address, const LineData& expected) { memoryExpected[address] = expected; }
     const LineData& expectedDevice(uint64_t address);
+    ArchitecturalState expectedTerminal();
+    void checkTerminal(const ArchitecturalState& observed, std::ostream* evidence = nullptr);
     bool idle();
 };
 } // namespace compactchi

@@ -171,6 +171,12 @@ void Requester::store(unsigned node, uint64_t address, const LineData& data) {
     it->second.data = data;
     it->second.permission = Permission::UD;
 }
+std::map<std::pair<unsigned, uint64_t>, ResidentLine> Requester::terminalCopies() const {
+    require(idle(), "requester terminal observation preceded drain");
+    std::map<std::pair<unsigned, uint64_t>, ResidentLine> result;
+    for (const auto& [key, copy] : copies) result.emplace(key, ResidentLine{copy.permission, copy.data});
+    return result;
+}
 bool Requester::idle() const {
     return controls.empty() && events.empty() && requests.empty() && progress.empty() && responses.empty() && dataResponses.empty() &&
            snoopAddresses.empty() && ackTransactions.empty();

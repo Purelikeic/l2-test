@@ -160,6 +160,17 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
                     if (memory->backend().access(cfg->memoryStart + i) != expected[i]) throw std::runtime_error("victim memory mismatch");
                 if (board->state(cfg->memoryStart).permission != compactchi::Permission::I) throw std::runtime_error("victim owner remained");
             }
+            compactchi::ArchitecturalState actual;
+            actual.requesters = requester->terminalCopies();
+            actual.devices = home->terminalDevices();
+            for (const auto address : initializedLines) {
+                auto& data = actual.memory[address];
+                for (unsigned i = 0; i < 64; ++i) data[i] = memory->backend().access(address + i);
+            }
+            std::ofstream terminal(output / "architectural-state.json");
+            board->checkTerminal(actual, &terminal);
+            terminal.close();
+            if (!terminal) throw std::runtime_error("cannot close architectural state evidence");
             successful = true; TLSystemFinishEvent().Fire();
         }
     }
@@ -202,7 +213,7 @@ public:
         fuzzer->onAction([this](const PlannedTestAction& planned) {
             const auto& a = planned.action;
             if (a.kind == TestActionKind::Store) { dirtyLine = a.data; if (victimProfile) victim.dirtyStored = true; }
-            actions << "{\"node\":" << planned.node << ",\"kind\":" << unsigned(a.kind)
+            actions << "{\"cycle\":" << cycle() << ",\"node\":" << planned.node << ",\"kind\":" << unsigned(a.kind)
                 << ",\"address\":" << a.address << ",\"txn\":" << a.txn << ",\"size\":" << a.size
                 << ",\"trace_tag\":" << (a.traceTag ? "true" : "false") << ",\"byte_enable\":" << a.byteEnable << ",\"data\":\"";
             for (const auto byte : a.data) actions << std::hex << std::setw(2) << std::setfill('0') << unsigned(byte);

@@ -1,6 +1,7 @@
 #include "ArchitecturalBoard.hpp"
 #include <cstdio>
 #include <functional>
+#include <sstream>
 
 class Context : public TLLocalContext {
     TLLocalConfig cfg{};
@@ -99,7 +100,46 @@ int main() {
         board.snoopResponse({2, 54}, 0, false);
         require(board.idle() && board.state(0x1000).permission == compactchi::Permission::I,
                 "invalidating Snoop leaked node state or obligations");
-        std::printf("ArchitecturalBoard: legal reads, Compact Snoops, independent data and %u mutation checks passed\n",
+        // Terminal storage is independent of the transport observations that
+        // produced the expected permissions. Clean data may differ from Home.
+        auto terminal = board.expectedTerminal();
+        require(terminal.requesters.size() == 1 && terminal.requesters.at({3, 0x1040}).permission == compactchi::Permission::SC,
+                "terminal model lost another node's clean residency");
+        require(terminal.memory.at(0x1000) == initial, "uncommitted store changed expected Home memory");
+        board.checkTerminal(terminal);
+        auto corrupt = terminal;
+        corrupt.requesters.erase({3, 0x1040}); reject([&] { board.checkTerminal(corrupt); });
+        corrupt = terminal; corrupt.requesters.at({3, 0x1040}).permission = compactchi::Permission::UC;
+        reject([&] { board.checkTerminal(corrupt); });
+        corrupt = terminal; corrupt.requesters.at({3, 0x1040}).data[63] ^= 1;
+        reject([&] { board.checkTerminal(corrupt); });
+        corrupt = terminal; corrupt.requesters.emplace(std::make_pair(4U, uint64_t(0x1040)), compactchi::ResidentLine{compactchi::Permission::SC, initial});
+        reject([&] { board.checkTerminal(corrupt); });
+        corrupt = terminal; corrupt.memory.at(0x1000) = dirty;
+        reject([&] { board.checkTerminal(corrupt); });
+        corrupt = terminal; corrupt.memory.erase(0x1040);
+        reject([&] { board.checkTerminal(corrupt); });
+        board.issue({4, 8}, compactchi::ReadClass::Once, 0x1040, false);
+        reject([&] { board.checkTerminal(terminal); });
+        board.data({4, 8}, 0, 0, 0, false, initial.data());
+        board.data({4, 8}, 1, 0, 0, false, initial.data() + 32);
+        board.checkTerminal(terminal); // ReadOnce creates no terminal resident copy.
+        TestAction device{TestActionKind::WriteNoSnp, 0x2008, 9, false, 3};
+        device.byteEnable = uint64_t(0xff) << 8; device.data.fill(0xa7);
+        board.issueControl({7, 9}, device); board.controlDBID({7, 9}, 1, false);
+        board.controlSent({7, 9}, 0); board.controlComplete({7, 9}, 1, 0, false);
+        terminal.devices[0x2000] = {};
+        std::fill_n(terminal.devices.at(0x2000).begin() + 8, 8, 0xa7);
+        board.checkTerminal(terminal);
+        corrupt = terminal; corrupt.devices.at(0x2000)[63] = 1;
+        reject([&] { board.checkTerminal(corrupt); }); // Untouched bytes matter too.
+        corrupt = terminal; corrupt.devices.clear(); reject([&] { board.checkTerminal(corrupt); });
+        board.memoryCommitted(0x1000, dirty);
+        reject([&] { board.checkTerminal(terminal); });
+        terminal.memory[0x1000] = dirty;
+        std::ostringstream evidence; board.checkTerminal(terminal, &evidence);
+        require(evidence.str().find("\"observed\"") != std::string::npos, "terminal evidence missing actual storage");
+        std::printf("ArchitecturalBoard: legal reads, Compact Snoops, terminal Requester/Home/device state and %u mutation checks passed\n",
                     rejectedMutations);
         return 0;
     } catch (const std::exception& e) {
