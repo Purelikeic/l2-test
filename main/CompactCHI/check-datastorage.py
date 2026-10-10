@@ -89,4 +89,13 @@ def mutations(directory, rows, resources, versions, undefined=(), transitions=()
         try: check(directory, changed, resource, versions, undefined, transitions)
         except (AssertionError, KeyError, ValueError): pass
         else: raise AssertionError("DataStorage checker accepted a mutated line/scan/drain")
+    if transitions:
+        broken = copy.deepcopy(transitions)
+        for entry in broken:
+            entry["transitions"] = [kind for kind in entry["transitions"] if kind not in ("refill", "snoop-data", "writeback")]
+            if entry["address"] in {v["address"] for v in versions}:
+                try: check(directory, rows, resources, versions, undefined, broken)
+                except (AssertionError, KeyError, ValueError): pass
+                else: raise AssertionError("DataStorage checker accepted a transition-ledger mutation")
+                break
     return len(variants)

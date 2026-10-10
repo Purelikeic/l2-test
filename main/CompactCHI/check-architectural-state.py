@@ -33,6 +33,7 @@ def check(root, events, seed, topo, terminal=None):
 
     def snoop_finish(key, resp):
         s = snoops.pop(key)
+        if not s["beats"]: transitions[s["address"]].append("snoop-no-data")
         owner = key[0], s["address"]
         if resp & 3:
             assert owner in copies
@@ -190,7 +191,7 @@ def check(root, events, seed, topo, terminal=None):
                 q["beats"].add(beat)
                 if q["beats"] == {0, 1}:
                     l2_data[q["address"]] = q["expected"]
-                    transitions[q["address"]].append("writeback")
+                    transitions[q["address"]].append("refill")
                     undefined_storage.discard(q["address"])
                     del down_reads[key]
             elif d == "chi_rx_rsp" and op == 4:

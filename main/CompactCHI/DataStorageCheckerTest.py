@@ -24,9 +24,10 @@ for i in range(4):
 resources = [dict(cycle=c, sim_time=c*2, ready=True, **{f:0 for f in fields}) for c in range(10,38)]
 versions = [dict(address=4096, data=old.hex()), dict(address=4672, data=new.hex())]
 undefined = [5248]
-result = check(directory,data,resources,versions,undefined)
+transitions = [dict(address=4096, transitions=["initial", "refill"]), dict(address=4672, transitions=["initial", "snoop-data"]), dict(address=5248, transitions=["initial", "makeunique-no-data"])]
+result = check(directory,data,resources,versions,undefined,transitions)
 assert result["checkedLines"] == 2 and result["unknownValidLines"] == 1
-rejected = mutations(directory,data,resources,versions,undefined)
+rejected = mutations(directory,data,resources,versions,undefined,transitions)
 for variant in ("latest-overwrites-stale", "drop-model", "undefined-without-client", "invent-unknown-resident"):
     metas, rows, golden = copy.deepcopy(directory), copy.deepcopy(data), copy.deepcopy(versions)
     if variant == "latest-overwrites-stale": rows[1]["lines"][0]["data"] = new.hex()
