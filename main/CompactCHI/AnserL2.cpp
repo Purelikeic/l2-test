@@ -11,6 +11,7 @@
 #include "VictimProfile.hpp"
 #include "NodeAgent.hpp"
 #include "ResourceMonitor.hpp"
+#include "DirectoryMonitor.hpp"
 #include <set>
 #include <iomanip>
 #include <algorithm>
@@ -37,6 +38,8 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     compactchi::LineData dirtyLine{};
     std::unique_ptr<compactchi::CanonicalTrace> trace;
     std::unique_ptr<compactchi::ResourceMonitor> resources;
+    std::unique_ptr<compactchi::DirectoryMonitor> directory;
+    bool directoryScan = false;
     compactchi::ResourceSnapshot resourceSnapshot() const {
         return {{dut.io_resources_mshrs, dut.io_resources_responses, dut.io_resources_writebacks,
             dut.io_resources_requests, dut.io_resources_queues, dut.io_resources_pipeline,
@@ -142,17 +145,29 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
         for (unsigned i = 0; i < 64; ++i) memory->backend().access(address + i) = bytes[i];
         board->initialize(address, bytes);
     }
+    bool terminalReady() const {
+        return actionScheduler && actionScheduler->done() && ready() && lowerBoard->idle() && !forwardAck &&
+            (!victimProfile || victim.complete()) && resourceSnapshot().empty() &&
+            !dut.io_downReq_valid && !dut.io_upSnp_valid;
+    }
     void maintain() {
         if (forwardAck && cycle() >= forwardAck->first) {
             const auto& data = forwardAck->second;
             lowerBoard->forwardCompAck(data.target, 8, data.dbid, data.traceTag);
             forwardAck.reset();
         }
-        if (actionScheduler && actionScheduler->done() && ready() && lowerBoard->idle() && !forwardAck &&
-            (!victimProfile || victim.complete()) && resourceSnapshot().empty() &&
-            !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
+        const bool drained = terminalReady();
+        if (drained) ++quiet;
         else quiet = 0;
-        if (quiet == 20) {
+        if (!directoryScan && quiet == 20) {
+            directoryScan = true; // Sample the first indexed row on the next real cycle.
+            return;
+        }
+        if (directoryScan && directory->complete()) {
+            compactchi::DirectoryClients expectedClients;
+            for (const auto& [key, copy] : board->expectedTerminal().requesters)
+                expectedClients.emplace(key, copy.permission == compactchi::Permission::SC ? 1U : 2U);
+            directory->finish(expectedClients);
             resources->finish();
             if (victimProfile) {
                 const auto expected = compactchi::VictimProfile::dirty(cfg->seed, cfg->memoryStart);
@@ -245,6 +260,8 @@ public:
         lowerBoard = std::make_unique<compactchi::LowerSnoopBoard>(*this, global);
         trace = std::make_unique<compactchi::CanonicalTrace>(output / "canonical", config.seed);
         resources = std::make_unique<compactchi::ResourceMonitor>((output / "resources.jsonl").string());
+        directory = std::make_unique<compactchi::DirectoryMonitor>((output / "directory.jsonl").string(),
+            dut.io_directorySets, dut.io_directoryWays, dut.io_directorySlices, dut.io_directoryLineBytes, dut.io_directoryAddrBits);
         victim = compactchi::VictimProfile(config.memoryStart, config.memoryEnd);
         std::ofstream topology(output / "topology.json");
         topology << "{\"coreCount\":" << config.coreCount << ",\"tlcPerCore\":" << config.masterCountPerCoreTLC
@@ -262,6 +279,16 @@ public:
     }
     void handleChannels() override {
         resources->sample(cycle(), simulation.time() - 1, resourceSnapshot());
+        if (directoryScan) {
+            using E = compactchi::DirectoryEntry;
+            directory->sample(cycle(), simulation.time() - 1, terminalReady(), dut.io_directorySet, dut.io_directoryWay,
+                std::array<E, 4>{{
+                    {dut.io_directoryEntries_0_tag, dut.io_directoryEntries_0_state, dut.io_directoryEntries_0_clientState, dut.io_directoryEntries_0_clientID, bool(dut.io_directoryEntries_0_client)},
+                    {dut.io_directoryEntries_1_tag, dut.io_directoryEntries_1_state, dut.io_directoryEntries_1_clientState, dut.io_directoryEntries_1_clientID, bool(dut.io_directoryEntries_1_client)},
+                    {dut.io_directoryEntries_2_tag, dut.io_directoryEntries_2_state, dut.io_directoryEntries_2_clientState, dut.io_directoryEntries_2_clientID, bool(dut.io_directoryEntries_2_client)},
+                    {dut.io_directoryEntries_3_tag, dut.io_directoryEntries_3_state, dut.io_directoryEntries_3_clientState, dut.io_directoryEntries_3_clientID, bool(dut.io_directoryEntries_3_client)}
+                }});
+        }
         using C = compactchi::Channel;
         observe(C::CchiRxReq, dut.io_req_valid, dut.io_req_ready, dut.io_req_bits_srcID,
             dut.io_req_bits_tgtID, dut.io_req_bits_txnID, dut.io_req_bits_opcode, dut.io_req_bits_traceTag, dut.io_req_bits_addr);
@@ -383,6 +410,8 @@ public:
     void fuzz() override { maintain(); }
     void updateSignals() override { memory->updateSignals(); }
     void drive() {
+        dut.io_directorySet = directoryScan ? directory->set() : 0;
+        dut.io_directoryWay = directoryScan ? directory->way() : 0;
         dut.io_l2NodeId = 1; dut.io_homeNodeId = 8;
         dut.io_flush = 0; dut.io_prefetchTask_valid = 0;
         dut.io_evt_valid = requester->eventValid();
@@ -464,7 +493,7 @@ public:
         if (successful && (!requester->idle() || !board->idle() || !home->idle()))
             throw std::runtime_error("final DUT profile resources did not drain");
         if (successful) resources->finish();
-        resources.reset();
+        resources.reset(); directory.reset();
         trace.reset(); lowerBoard.reset(); home.reset(); memory.reset(); requester.reset(); board.reset();
     }
 };
@@ -500,6 +529,7 @@ int main(int argc, char** argv) {
         dut.io_req_valid = dut.io_evt_valid = dut.io_prefetchTask_valid = 0;
         dut.io_upRspIn_valid = dut.io_upDatIn_valid = dut.io_downRsp_valid = dut.io_downDat_valid = dut.io_downSnp_valid = 0;
         dut.io_flush = 0;
+        dut.io_directorySet = dut.io_directoryWay = 0;
         for (unsigned i = 0; i < 8; ++i) { edge(false); edge(true); }
         dut.reset = 0;
         const std::string replay = argc > 4 && std::string(argv[4]) != "-" ? argv[4] : "";

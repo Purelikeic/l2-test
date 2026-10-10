@@ -128,6 +128,15 @@ resource_mutations = resource_tools["mutations"](resource_rows)
 resource_by_time = {row["sim_time"]: row for row in resource_rows}
 assert len(resource_by_time) == len(resource_rows)
 resource_fields = resource_tools["FIELDS"]
+directory_tools = runpy.run_path(str(Path(__file__).with_name("check-directory.py")))
+directory_rows = [json.loads(line) for line in (root / "directory.jsonl").read_text().splitlines()]
+expected_clients = {(e["node"], e["address"]): e["clientState"] for e in architectural_evidence["requesterFootprint"]}
+roles = {n["id"]: n["kind"] for n in topo["nodes"]}
+directory_evidence = directory_tools["check"](directory_rows, resource_rows, expected_clients, roles)
+directory_evidence["mutationRejections"] = directory_tools["mutations"](directory_rows, resource_rows, expected_clients, roles)
+assert not any(r["cycle"] >= directory_rows[1]["cycle"] for r in events), "Directory scan overlaps live channel traffic"
+directory_by_time = {row["sim_time"]: row for row in directory_rows[1:]}
+directory_geometry = directory_rows[0]
 ports = {
     "cchi_rx_req": "req", "cchi_rx_evt": "evt", "cchi_rx_rsp": "upRspIn", "cchi_rx_dat": "upDatIn",
     "cchi_tx_snp": "upSnp", "cchi_tx_rsp": "upRsp", "cchi_tx_dat": "upDat",
@@ -142,9 +151,23 @@ values = {}
 time = None
 checked = 0
 resource_checked = 0
+directory_checked = 0
 
 def check_time():
-    global checked, resource_checked
+    global checked, resource_checked, directory_checked
+    if time in directory_by_time:
+        row = directory_by_time.pop(time)
+        expected = {"io_directorySet": row["set"], "io_directoryWay": row["way"]}
+        for key, signal in (("sets", "directorySets"), ("ways", "directoryWays"), ("slices", "directorySlices"),
+                            ("lineBytes", "directoryLineBytes"), ("addrBits", "directoryAddrBits")):
+            expected["io_" + signal] = directory_geometry[key]
+        for slice_id, entry in enumerate(row["entries"]):
+            for key in ("tag", "state", "client", "clientState", "clientID"):
+                expected[f"io_directoryEntries_{slice_id}_{key}"] = int(entry[key])
+        for signal, value in expected.items():
+            assert signal in symbols and values.get(symbols[signal]) == value, (time, signal, "Directory log differs from actual storage VCD")
+        assert values[symbols["clock"]] == 0
+        directory_checked += 1
     if time in resource_by_time:
         row = resource_by_time.pop(time)
         for field in (*resource_fields, "ready"):
@@ -209,13 +232,15 @@ with (root / "waveform.vcd").open() as waveform:
     check_time()
 assert not by_time and checked == len(events)
 assert not resource_by_time and resource_checked == len(resource_rows)
+assert not directory_by_time and directory_checked == len(directory_rows) - 1
+directory_evidence["waveformAlignedSlots"] = directory_checked * directory_geometry["slices"]
 resource_evidence["waveformAlignedSamples"] = resource_checked
 resource_evidence["mutationRejections"] = resource_mutations
 evidence = {"profile": profile, "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
             "scope": scopes[profile], "nodeEvidence": node_evidence, "resourceEvidence": resource_evidence,
-            "architecturalEvidence": architectural_evidence}
+            "architecturalEvidence": architectural_evidence, "directoryEvidence": directory_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

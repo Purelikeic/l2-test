@@ -1,6 +1,39 @@
 # Compact CHI testing
 
-## Current terminal architectural scoreboard boundary
+## Current terminal Directory client footprint boundary
+
+Directory exposes a read-only indexed view of current Tag/Meta registers through
+Slice/top. The observation selector does not reserve the functional read port or
+feed ready, FSM, admission, capacity, replacement policy or protocol timing.
+Only tag, state, client, clientState and clientID are exported for this gate.
+DataStorage is not read through this interface.
+
+After all independent obligations and observed resources drain plus twenty settle
+cycles, native runs sweep every Set/Way in all four Slices on actual cycles. The
+whole sweep must remain drained. Default geometry is 512 cycles / 2048 slots.
+directory.jsonl records geometry, selectors, cycles/simulation times and all four
+entries per row. Each row and geometry field is compared to actual top VCD.
+Terminal Requester/Home snapshots are then taken at the final sweep/resource cycle.
+
+The online monitor compares Directory clients with independently expected
+Requester residency. check-directory.py uses the separate architectural replay's
+expected clients, never observed metadata writes or replacement choices. Both
+require exact client identity/address/Shared-Unique permission equality, no client
+on an Invalid line, and no duplicated valid resident tag. ReadOnce/MMIO never
+appear as clients. Requester UC and UD both map to Directory Unique (clientState
+2): local L1 Store is not a wire notification of dirty status. SC maps to 1.
+Inactive clientID/clientState payload is irrelevant when client is false.
+
+This closes bounded terminal Directory inclusion and client permissions. It does
+not independently predict non-client residency, every L2 state transition or
+DataStorage's clean/stale/latest versions. Resident lines without clients remain
+legal, and no DUT-selected way or tag supplies an expected replacement outcome.
+Complete L2 residency/data, external forward-node and concurrency/error/nested
+coverage remain open. Second persistent owners stay Deferred, unsupported
+WriteUnique/Exclusive/Atomic stay Illegal, and global-test remains guarded.
+PBOP/VBOP, data arrays and all functional control are unchanged.
+
+## Retained Requester/Home terminal architectural scoreboard
 
 Successful native finish now also requires exact terminal Requester/Home storage
 agreement with ArchitecturalBoard. The observed requester map is copied from

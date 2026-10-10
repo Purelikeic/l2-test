@@ -203,7 +203,8 @@ def check(root, events, seed, topo, terminal=None):
     assert terminal["expected"] == expected, "online architectural model differs from independent replay"
     assert terminal["observed"] == expected, "actual Requester/Home terminal storage differs from independent replay"
     assert terminal["cycle"] >= max(by_cycle)
-    return dict(requesterCopies=len(copies), memoryLines=len(memory), deviceLines=len(devices),
+    return dict(requesterFootprint=[dict(node=n, address=a, clientState=1 if p == 1 else 2) for (n, a), (p, data) in sorted(copies.items())],
+                requesterCopies=len(copies), memoryLines=len(memory), deviceLines=len(devices),
                 scope="terminal Requester identity/permission/data and committed Home/device bytes; internal L2 residency remains open")
 
 
