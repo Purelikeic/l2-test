@@ -10,6 +10,7 @@
 #include "CanonicalTrace.hpp"
 #include "VictimProfile.hpp"
 #include "NodeAgent.hpp"
+#include "ResourceMonitor.hpp"
 #include <set>
 #include <iomanip>
 #include <algorithm>
@@ -35,6 +36,13 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     unsigned lowerPhase = 0;
     compactchi::LineData dirtyLine{};
     std::unique_ptr<compactchi::CanonicalTrace> trace;
+    std::unique_ptr<compactchi::ResourceMonitor> resources;
+    compactchi::ResourceSnapshot resourceSnapshot() const {
+        return {{dut.io_resources_mshrs, dut.io_resources_responses, dut.io_resources_writebacks,
+            dut.io_resources_requests, dut.io_resources_queues, dut.io_resources_pipeline,
+            dut.io_resources_serializers, dut.io_resources_controllers, dut.io_resources_retryOwners,
+            dut.io_resources_credits}, bool(dut.io_resources_ready)};
+    }
     std::mt19937 random;
     TestScenario scenario;
     bool mutateData;
@@ -141,9 +149,11 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
             forwardAck.reset();
         }
         if (actionScheduler && actionScheduler->done() && ready() && lowerBoard->idle() && !forwardAck &&
-            (!victimProfile || victim.complete()) && !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
+            (!victimProfile || victim.complete()) && resourceSnapshot().empty() &&
+            !dut.io_downReq_valid && !dut.io_upSnp_valid) ++quiet;
         else quiet = 0;
         if (quiet == 20) {
+            resources->finish();
             if (victimProfile) {
                 const auto expected = compactchi::VictimProfile::dirty(cfg->seed, cfg->memoryStart);
                 for (unsigned i = 0; i < 64; ++i)
@@ -223,6 +233,7 @@ public:
         home->onMemoryCommit([this](uint64_t address, const compactchi::LineData& bytes) { board->memoryCommitted(address, bytes); });
         lowerBoard = std::make_unique<compactchi::LowerSnoopBoard>(*this, global);
         trace = std::make_unique<compactchi::CanonicalTrace>(output / "canonical", config.seed);
+        resources = std::make_unique<compactchi::ResourceMonitor>((output / "resources.jsonl").string());
         victim = compactchi::VictimProfile(config.memoryStart, config.memoryEnd);
         std::ofstream topology(output / "topology.json");
         topology << "{\"coreCount\":" << config.coreCount << ",\"tlcPerCore\":" << config.masterCountPerCoreTLC
@@ -239,6 +250,7 @@ public:
         topology << "]}";
     }
     void handleChannels() override {
+        resources->sample(cycle(), simulation.time() - 1, resourceSnapshot());
         using C = compactchi::Channel;
         observe(C::CchiRxReq, dut.io_req_valid, dut.io_req_ready, dut.io_req_bits_srcID,
             dut.io_req_bits_tgtID, dut.io_req_bits_txnID, dut.io_req_bits_opcode, dut.io_req_bits_traceTag, dut.io_req_bits_addr);
@@ -440,6 +452,8 @@ public:
     void finalize() override {
         if (successful && (!requester->idle() || !board->idle() || !home->idle()))
             throw std::runtime_error("final DUT profile resources did not drain");
+        if (successful) resources->finish();
+        resources.reset();
         trace.reset(); lowerBoard.reset(); home.reset(); memory.reset(); requester.reset(); board.reset();
     }
 };

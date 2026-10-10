@@ -395,6 +395,13 @@ compactchi-node-fuzzer-test:
 		$(CURDIR)/main/Base/TLGlobal.cpp -o $(COMPACTCHI_CHECK_DIR)/node-fuzzer-test
 	$(COMPACTCHI_CHECK_DIR)/node-fuzzer-test $(COMPACTCHI_CHECK_DIR)
 
+.PHONY: compactchi-resource-test
+compactchi-resource-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/ResourceMonitorTest.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/resource-monitor-test
+	$(COMPACTCHI_CHECK_DIR)/resource-monitor-test $(COMPACTCHI_CHECK_DIR)
+
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	@mkdir -p $(COMPACTCHI_OBJ_DIR)

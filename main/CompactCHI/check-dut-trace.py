@@ -117,6 +117,13 @@ else:
         forwarded = [r for r in events if r["direction"] == "chi_tx_rsp" and r["txn_id"] == 2049 and r["handshake"]]
         assert len(forwarded) == 1 and forwarded[0]["opcode"] == 9 and forwarded[0]["resp"] == 0 and forwarded[0]["forward_state"] == 2
 
+resource_tools = runpy.run_path(str(Path(__file__).with_name("check-resources.py")))
+resource_rows = [json.loads(line) for line in (root / "resources.jsonl").read_text().splitlines()]
+resource_evidence = resource_tools["check"](resource_rows)
+resource_mutations = resource_tools["mutations"](resource_rows)
+resource_by_time = {row["sim_time"]: row for row in resource_rows}
+assert len(resource_by_time) == len(resource_rows)
+resource_fields = resource_tools["FIELDS"]
 ports = {
     "cchi_rx_req": "req", "cchi_rx_evt": "evt", "cchi_rx_rsp": "upRspIn", "cchi_rx_dat": "upDatIn",
     "cchi_tx_snp": "upSnp", "cchi_tx_rsp": "upRsp", "cchi_tx_dat": "upDat",
@@ -130,9 +137,18 @@ symbols = {}
 values = {}
 time = None
 checked = 0
+resource_checked = 0
 
 def check_time():
-    global checked
+    global checked, resource_checked
+    if time in resource_by_time:
+        row = resource_by_time.pop(time)
+        for field in (*resource_fields, "ready"):
+            signal = "io_resources_" + field
+            assert signal in symbols, signal
+            assert values.get(symbols[signal]) == int(row[field]), (time, signal, "resource log differs from DUT VCD")
+        assert values[symbols["clock"]] == 0
+        resource_checked += 1
     if time not in by_time:
         return
     for row in by_time.pop(time):
@@ -188,10 +204,13 @@ with (root / "waveform.vcd").open() as waveform:
             values[fields[1]] = int(value[1:], 2) if not any(c in value.lower() for c in "xz") else None
     check_time()
 assert not by_time and checked == len(events)
+assert not resource_by_time and resource_checked == len(resource_rows)
+resource_evidence["waveformAlignedSamples"] = resource_checked
+resource_evidence["mutationRejections"] = resource_mutations
 evidence = {"profile": profile, "seed": seed,
             "requestCount": expected_requests,
             "waveformAlignedEvents": checked, "responseLatencyCycles": latency,
-            "scope": scopes[profile], "nodeEvidence": node_evidence}
+            "scope": scopes[profile], "nodeEvidence": node_evidence, "resourceEvidence": resource_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

@@ -1,6 +1,40 @@
 # Compact CHI testing
 
-## Current configured Sequencer nodes and action scheduler
+## Current DUT resource observation and terminal drain
+
+ResourceStatus is a read-only RTL summary of occupied ownership layers, exported
+by Slice/top. It includes live MSHR and upstream response contexts, all WBF and
+Snoop data reservations, request-buffer entries, task/Snoop/TXREQ queues, valid
+pipeline/buffer-response slots, serializer activity, held/control/prefetch/MMIO/
+Flush activity, RetryAck owners and early P-Credits. Counts are not summed into
+a distinct transaction count: transfer copies can occupy several layers.
+
+No summary feeds functional arbitration, ready, FSM or capacity control. Counts
+use current validity, not same-cycle free/reuse lookahead. Retired data bits in
+Refill/WBB arrays and architectural resident cache lines are not live resources;
+their active ownership is represented by contexts. ready marks completed Slice
+initialization. This observation is not Directory residency or architectural
+permission/data correctness, which remains with independent boards.
+
+Native ResourceMonitor records resources.jsonl every cycle with actual simulation
+time and requires observed activity plus terminal zero counts. Successful finish
+requires all resource fields zero/ready alongside existing independent protocol
+obligations and twenty settle cycles. A quiet wire can no longer hide a response
+context, queued data or early credit. The resource checker verifies continuous
+sampling, terminal window and thirteen leak/readiness/activity/gap mutations;
+the original trace checker compares every resource sample with top-level VCD
+ports, including cycles without a channel event.
+
+Focused RTL checks cover MSHR-to-serializer transfer, a quiet response context
+waiting for upstream CompAck, Snoop reservations absent from WBF-only info,
+current occupancy versus release lookahead, and retained early credits. The host
+resource monitor rejects live slots in each of ten observation categories.
+This closes the observed resource drain boundary, not full architecture/global
+acceptance or every latent resource implementation. PBOP/VBOP, full scoreboard,
+all concurrency/error/nested scenarios and final architectural residency remain
+pending; global-test stays guarded.
+
+## Historical configured Sequencer nodes — before resource drain observation
 
 Both protocols use the original TLLocalConfig/LoadTestConfig and tltest.ini schema.
 The native binding calls TLSequencer::Initialize(config, adapter). Sequencer
