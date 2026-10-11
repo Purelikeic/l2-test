@@ -23,7 +23,7 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
     known = {r["address"]: bytes.fromhex(r["data"]) for r in versions}
     assert len(known) == len(versions) and all(len(data) == line for data in known.values())
     transition_map = {r["address"]: r["transitions"] for r in transitions}
-    allowed = {"initial", "refill", "snoop-data", "snoop-no-data", "makeunique-no-data", "cmo-or-eviction-discard"}
+    allowed = {"initial", "refill", "snoop-data", "snoop-no-data", "makeunique-no-data", "evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard", "cmo-cleanshared-preserve"}
     for address in known:
         assert address in transition_map and any(kind in transition_map[address] for kind in ("refill", "snoop-data")), (address, "known version lacks a transition ledger")
     for address in undefined:
@@ -31,12 +31,13 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
     for address, sequence in transition_map.items():
         assert sequence and sequence[0] == "initial" and set(sequence) <= allowed, (address, sequence)
         stores = [i for i, kind in enumerate(sequence) if kind in ("refill", "snoop-data")]
-        discards = [i for i, kind in enumerate(sequence) if kind == "cmo-or-eviction-discard"]
+        discards = [i for i, kind in enumerate(sequence) if kind in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
         if address in known:
             assert stores and (not discards or max(stores) > max(discards)), (address, sequence)
         if address in undefined:
             assert not stores and "makeunique-no-data" in sequence and (not discards or sequence[-1] == "cmo-or-eviction-discard"), (address, sequence)
     checked, unknown, invalid = 0, [], 0
+    valid_addresses = set()
     for index, (meta, data) in enumerate(zip(directory, samples)):
         assert (meta["set"], meta["way"]) == (data["set"], data["way"]) == divmod(index, ways)
         assert data["cycle"] == samples[0]["cycle"] + index
@@ -51,6 +52,7 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
                 invalid += 1
                 continue # Invalid SRAM payload is not architectural state.
             address = ((entry["tag"] * sets + meta["set"]) * slices + slice_id) * line
+            valid_addresses.add(address)
             if address not in known:
                 assert address in undefined, (address, "resident has no independently expected data version")
                 assert entry["client"] and entry["clientState"] == 2, "undefined MakeUnique data lacks a Unique client"
@@ -58,6 +60,10 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
                 continue # MakeUnique can allocate permission with no data installation.
             assert actual == known[address], (address, "DataStorage differs from independent expected version")
             checked += 1
+    for address, sequence in transition_map.items():
+        discards = [kind for kind in sequence if kind in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
+        if discards and sequence[-1] in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard"):
+            assert address not in valid_addresses, (address, sequence, "discarded line remains valid")
     return dict(scanCycles=len(samples), observedSlots=len(samples) * slices, checkedLines=checked,
                 unknownValidLines=len(unknown), unknownAddresses=unknown, invalidSlots=invalid,
                 scope="terminal bytes of independently modeled refill/retained-Snoop/WriteBack versions; undefined MakeUnique storage and full residency remain open")

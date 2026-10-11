@@ -25,15 +25,16 @@ transition modeling remain open.
 check-datastorage.py checks the consecutive, coordinate-complete sweep, continued
 resource drain, geometry and independently defined versions. The independent
 replay also emits a per-line transition ledger: known bytes must have an initial
-state followed by refill, retained Snoop-data or WriteBack; CMO/eviction discard
-and MakeUnique no-data transitions are recorded separately. This prevents a DUT
-response from becoming expected data merely because it was observed. It rejects
-data corruption at both ends of both beats, scan gaps, missing/extra rows, bad
-errors and resource leaks. The host fixture distinguishes stale L2 bytes, dirty
-installed bytes and no-data allocations; it also rejects unmodeled resident
-versions. The retained Directory, Requester/Home and global guard boundaries
-still apply. PBOP/VBOP, second-owner admission and unsupported protocols are
-unchanged.
+state followed by refill or retained Snoop-data; CMO/Evict/WriteBack discard and
+MakeUnique no-data transitions are recorded separately. CleanShared preservation
+is distinct from invalidation. A terminal valid line cannot end in a discard
+transition; a later independent refill is required to restore it. This prevents
+a DUT response from becoming expected data merely because it was observed. It
+rejects data corruption at both ends of both beats, scan gaps, missing/extra rows,
+bad errors and resource leaks. The host fixture covers refill plus clean
+preservation, invalidation/eviction combinations and malformed transition order.
+The retained Directory, Requester/Home and global guard boundaries still apply.
+PBOP/VBOP, second-owner admission and unsupported protocols are unchanged.
 
 ## Retained terminal Directory client footprint boundary
 
