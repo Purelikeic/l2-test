@@ -9,6 +9,8 @@ def check(root, events, profile, actions=None):
     if actions is None:
         actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
     cm_actions = [a for a in actions if a["kind"] in CMO]
+    topo = json.loads((root / "topology.json").read_text())
+    roles = {n["id"]: n["kind"] for n in topo["nodes"]}
     fired = [r for r in events if r["handshake"]]
     evidence = []
     used = set()
@@ -29,7 +31,7 @@ def check(root, events, profile, actions=None):
                           fired[i]["target"] == action["node"] and fired[i]["txn_id"] == action["txn"]), None)
         assert rsp_index is not None, "CMO lacks upstream Compact CompCMO"
         rsp = fired[rsp_index]
-        assert rsp["node"] == req["target"] and rsp["opcode"] == 4 and rsp["resp_err"] == 0
+        assert rsp["node"] == req["target"] and rsp["target"] == action["node"] and rsp["opcode"] == 4 and rsp["resp_err"] == 0
         assert rsp["trace_tag"] == action["trace_tag"] and rsp["cycle"] > req["cycle"]
         window = fired[req_index + 1:rsp_index]
         pending = {}
@@ -39,6 +41,7 @@ def check(root, events, profile, actions=None):
         for r in window:
             d = r["direction"]
             if d == "chi_tx_req" and r["address"] == action["address"] and r["opcode"] == downstream_op:
+                assert r["node"] == 1 and r["target"] == 8
                 key = r["node"], r["txn_id"]
                 if key in downstream: assert downstream[key]["target"] == r["target"]
                 downstream[key] = r # Retry reissues keep the same CMO identity.
@@ -49,14 +52,14 @@ def check(root, events, profile, actions=None):
                 home_done.append((original, r))
             elif d == "cchi_tx_snp" and r["address"] == action["address"]:
                 key = r["target"], r["txn_id"]
-                assert key not in pending and r["node"] == req["target"] and r["opcode"] in (0, 1, 2, 3)
+                assert key not in pending and r["node"] == req["target"] and roles[r["target"]] == 0 and r["opcode"] in (0, 1, 2, 3)
                 pending[key] = dict(request=r, beats=set(), resp=None)
                 nested.append(r)
             elif d in ("cchi_rx_rsp", "cchi_rx_dat") and (r["node"], r["txn_id"]) in pending:
                 key = r["node"], r["txn_id"]
                 snoop = pending[key]
-                assert r["target"] == snoop["request"]["node"] and r["resp_err"] == 0
-                assert r["trace_tag"] == snoop["request"]["trace_tag"]
+                assert r["target"] == snoop["request"]["node"] and r["target"] == 1 and r["resp_err"] == 0
+                assert r["trace_tag"] == snoop["request"]["trace_tag"] and r["node"] == snoop["request"]["target"]
                 if d == "cchi_rx_rsp":
                     assert r["opcode"] == 1 and not snoop["beats"], "Snoop mixed RSP and partial DAT"
                     del pending[key]
