@@ -418,6 +418,14 @@ compactchi-forward-node-test:
 		-o $(COMPACTCHI_CHECK_DIR)/forward-node-test
 	$(COMPACTCHI_CHECK_DIR)/forward-node-test
 
+.PHONY: compactchi-cmo-forward-test
+compactchi-cmo-forward-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)/cmo-forward
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/CMOForwardTest.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/cmo-forward-test
+	$(COMPACTCHI_CHECK_DIR)/cmo-forward-test $(COMPACTCHI_CHECK_DIR)/cmo-forward/forward.jsonl
+	python3 $(CURDIR)/main/CompactCHI/CMOForwardCheckerTest.py $(COMPACTCHI_CHECK_DIR)/cmo-forward
+
 .PHONY: compactchi-resource-test
 compactchi-resource-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)

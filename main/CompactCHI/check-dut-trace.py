@@ -123,6 +123,8 @@ forward_evidence["mutationRejections"] = forward_tools["mutations"](root, events
 cmo_tools = runpy.run_path(str(Path(__file__).with_name("check-cmo.py")))
 cmo_evidence = cmo_tools["check"](root, events, profile)
 cmo_evidence["mutationRejections"] = cmo_tools["mutations"](root, events, profile)
+cmo_forward_tools = runpy.run_path(str(Path(__file__).with_name("check-cmo-forward.py")))
+cmo_forward_evidence = cmo_forward_tools["check"](root, events, profile, cmo_evidence, forward_evidence)
 architectural_tools = runpy.run_path(str(Path(__file__).with_name("check-architectural-state.py")))
 architectural_evidence = architectural_tools["check"](root, events, seed, topo)
 architectural_evidence["mutationRejections"] = architectural_tools["mutations"](root, events, seed, topo)
@@ -279,7 +281,7 @@ evidence = {"profile": profile, "seed": seed,
             "scope": scopes[profile], "nodeEvidence": node_evidence, "resourceEvidence": resource_evidence,
             "architecturalEvidence": architectural_evidence, "directoryEvidence": directory_evidence,
             "dataStorageEvidence": data_evidence, "forwardEvidence": forward_evidence,
-            "cmoEvidence": cmo_evidence}
+            "cmoEvidence": cmo_evidence, "cmoForwardEvidence": cmo_forward_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

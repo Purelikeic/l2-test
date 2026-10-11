@@ -13,6 +13,28 @@ all other finite traces use this endpoint and retain the existing external
 forward-node limitation: it is a bounded independent test endpoint, not a full
 network topology model.
 
+## Round 1 CMO/forward interaction boundary
+
+check-cmo-forward.py consumes the existing CMO and forward audits and adds
+`cmoForwardEvidence` to each trace result. It joins the fixed endpoint's accepted
+SnpUniqueFwd with its forward TxnID and original Home Snoop DBID, and rejects an
+external 12-to-8 CompAck on any DUT channel, including an unaccepted valid offer.
+CMO completion remains its own Home Comp followed by upstream Compact CompCMO;
+numeric TxnID/DBID aliases do not merge the two obligations.
+
+`make compactchi-cmo-forward-test` uses the unchanged ForwardNodeBoard to supply
+host observations. Its transport fixtures cover all three CMO kinds, independent
+addresses with overlapping lifetimes, and serialized same-line lifetimes, with
+both downstream-CMO/forward-TxnID and downstream-CMO/Home-Snoop-DBID aliases.
+Independent-line CompCMO may precede the external acknowledgment. These are
+host transport-audit cases, not external residency or CMO visibility proofs.
+Nested same-line CMO/DCT is explicitly rejected as outside this bounded model.
+No DCT bytes, resource count or observed replacement supplies a CMO expectation.
+
+The retained 35 native/matrix traces have CMO and DCT in separate profiles;
+they provide no native joint CMO/DCT interaction coverage. The new host target
+is part of tester-foundation. Existing ForwardNodeBoard, forward.jsonl format,
+check-forward.py and their 15 observations / 35 mutations remain unchanged.
 
 ## Current DataStorage terminal version boundary
 
