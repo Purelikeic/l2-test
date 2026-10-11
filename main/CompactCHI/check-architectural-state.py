@@ -122,9 +122,9 @@ def check(root, events, seed, topo, terminal=None):
                     assert op == (4 if a["kind"] in (5, 6, 7) else 1)
                     if a["kind"] == 7: latest[a["address"]] = memory[a["address"]]
                     if a["kind"] == 5: assert all(p != 3 for (n, addr), (p, data) in copies.items() if addr == a["address"])
-                    if a["kind"] in (3, 4, 6, 7):
+                    if a["kind"] in (3, 6, 7):
                         l2_data.pop(a["address"], None)
-                        transitions[a["address"]].append({3: "evict-discard", 4: "writeback-discard", 6: "cmo-cleaninvalid-discard", 7: "cmo-makeinvalid-discard"}[a["kind"]])
+                        transitions[a["address"]].append({3: "evict-discard", 6: "cmo-cleaninvalid-discard", 7: "cmo-makeinvalid-discard"}[a["kind"]])
                     elif a["kind"] == 5:
                         transitions[a["address"]].append("cmo-cleanshared-preserve")
                     if a["kind"] in (6, 7): assert all(addr != a["address"] for n, addr in copies)
