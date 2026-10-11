@@ -47,8 +47,10 @@ for bad in (
     else: raise AssertionError("DataStorage accepted an invalid transition sequence")
 discard_directory = copy.deepcopy(directory)
 discard_directory[1]["entries"][1]["state"] = 0
-discard_transitions = [transitions[0], dict(address=4672, transitions=["initial", "snoop-data", "writeback-discard"]), transitions[2]]
-check(discard_directory, data, resources, versions, undefined, discard_transitions)
+victim_transitions = [transitions[0], dict(address=4672, transitions=["initial", "snoop-data", "victim-writeback-discard"]), transitions[2]]
+check(discard_directory, data, resources, versions, undefined, victim_transitions)
+evict_transitions = [transitions[0], dict(address=4672, transitions=["initial", "snoop-data", "victim-evict-discard"]), transitions[2]]
+check(discard_directory, data, resources, versions, undefined, evict_transitions)
 install_transitions = [dict(address=4096, transitions=["initial", "upstream-writeback-install"]), transitions[1], transitions[2]]
 check(directory, data, resources, versions, undefined, install_transitions)
-print("DataStorage independent host checker: stale/latest/no-data versions, transition order, upstream WriteBack install, WriteBack discard, 16 slots and", rejected, "mutations passed")
+print("DataStorage independent host checker: stale/latest/no-data versions, transition order, upstream WriteBack install, victim WriteBack/Evict discard, 16 slots and", rejected, "mutations passed")

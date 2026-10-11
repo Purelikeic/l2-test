@@ -23,7 +23,7 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
     known = {r["address"]: bytes.fromhex(r["data"]) for r in versions}
     assert len(known) == len(versions) and all(len(data) == line for data in known.values())
     transition_map = {r["address"]: r["transitions"] for r in transitions}
-    allowed = {"initial", "refill", "snoop-data", "snoop-no-data", "makeunique-no-data", "upstream-writeback-install", "evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard", "cmo-cleanshared-preserve"}
+    allowed = {"initial", "refill", "snoop-data", "snoop-no-data", "makeunique-no-data", "upstream-writeback-install", "evict-discard", "writeback-discard", "victim-evict-discard", "victim-writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard", "cmo-cleanshared-preserve"}
     for address in known:
         assert address in transition_map and any(kind in transition_map[address] for kind in ("refill", "snoop-data", "upstream-writeback-install")), (address, "known version lacks a transition ledger")
     for address in undefined:
@@ -31,7 +31,7 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
     for address, sequence in transition_map.items():
         assert sequence and sequence[0] == "initial" and set(sequence) <= allowed, (address, sequence)
         stores = [i for i, kind in enumerate(sequence) if kind in ("refill", "snoop-data", "upstream-writeback-install")]
-        discards = [i for i, kind in enumerate(sequence) if kind in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
+        discards = [i for i, kind in enumerate(sequence) if kind in ("evict-discard", "writeback-discard", "victim-evict-discard", "victim-writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
         if address in known:
             assert stores, (address, sequence)
         if address in undefined:
@@ -64,7 +64,7 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
         discards = [kind for kind in sequence if kind in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
         if address in valid_addresses and address in known:
             assert not discards or max(i for i, kind in enumerate(sequence) if kind in ("refill", "snoop-data", "upstream-writeback-install")) > max(i for i, kind in enumerate(sequence) if kind in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")), (address, sequence)
-        if discards and sequence[-1] in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard"):
+        if discards and sequence[-1] in ("evict-discard", "writeback-discard", "victim-evict-discard", "victim-writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard"):
             assert address not in valid_addresses, (address, sequence, "discarded line remains valid")
     return dict(scanCycles=len(samples), observedSlots=len(samples) * slices, checkedLines=checked,
                 unknownValidLines=len(unknown), unknownAddresses=unknown, invalidSlots=invalid,

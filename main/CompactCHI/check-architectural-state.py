@@ -179,8 +179,8 @@ def check(root, events, seed, topo, terminal=None):
                     if key not in down_reads:
                         down_reads[key] = dict(address=r["address"], expected=memory[r["address"]], beats=set())
                     else: assert down_reads[key]["address"] == r["address"]
-                if op in (0x17, 0x1b, 0x42, 0x1c, 0x1d):
-                    writes[r["node"], r["txn_id"]] = dict(address=r["address"], size=6 if op not in (0x1c, 0x1d) else
+                if op in (0x0d, 0x17, 0x1b, 0x42, 0x1c, 0x1d):
+                    writes[r["node"], r["txn_id"]] = dict(opcode=op, address=r["address"], size=6 if op not in (0x1c, 0x1d) else
                         next(q["action"]["size"] for q in requests.values() if q["action"]["kind"] == 10 and q["action"]["address"] == r["address"]),
                         device=op in (0x1c, 0x1d), beats=set())
             elif d == "chi_rx_dat" and (r["target"], r["txn_id"]) in down_reads:
@@ -197,7 +197,10 @@ def check(root, events, seed, topo, terminal=None):
                     undefined_storage.discard(q["address"])
                     del down_reads[key]
             elif d == "chi_rx_rsp" and op == 4:
-                writes.pop((r["target"], r["txn_id"]), None) # Clean WriteEvictOrEvict Comp branch.
+                entry = writes.pop((r["target"], r["txn_id"]), None)
+                if entry and entry["opcode"] in (0x0d, 0x42):
+                    l2_data.pop(entry["address"], None)
+                    transitions[entry["address"]].append("victim-evict-discard")
             elif d == "chi_rx_rsp" and op == 5:
                 key = r["target"], r["txn_id"]
                 assert key in writes
@@ -218,6 +221,9 @@ def check(root, events, seed, topo, terminal=None):
                 required = {0, 1} if q["size"] == 6 else {(q["address"] >> 5) & 1}
                 if q["beats"] == required:
                     if not q["device"]: memory[q["address"]] = latest[q["address"]]
+                    if not q["device"] and q["opcode"] in (0x17, 0x1b, 0x42):
+                        l2_data.pop(q["address"], None)
+                        transitions[q["address"]].append("victim-writeback-discard")
                     del write_dbids[r["txn_id"]]
             elif d == "chi_tx_dat" and op == 1 and r["target"] == 8:
                 # Existing lower-Snoop Home sink commits through MemoryAgent;

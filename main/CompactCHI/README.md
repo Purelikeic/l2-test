@@ -27,7 +27,8 @@ resource drain, geometry and independently defined versions. The independent
 replay also emits a per-line transition ledger. It distinguishes the two
 WriteBack roles: upstream L1-to-L2 WriteBackFull is
 `upstream-writeback-install` and may leave a valid UD line; downstream victim
-WriteBack is `writeback-discard` and must leave the line invalid. CleanShared
+WriteBack is `victim-writeback-discard` and clean victim eviction is
+`victim-evict-discard`, both must leave the line invalid. CleanShared
 preservation is distinct from invalidation. A terminal valid line cannot end in
 a discard transition; a later independent refill is required to restore it.
 This prevents a DUT response from becoming expected data merely because it was
