@@ -139,7 +139,35 @@ int main() {
         terminal.memory[0x1000] = dirty;
         std::ostringstream evidence; board.checkTerminal(terminal, &evidence);
         require(evidence.str().find("\"observed\"") != std::string::npos, "terminal evidence missing actual storage");
-        std::printf("ArchitecturalBoard: legal reads, Compact Snoops, terminal Requester/Home/device state and %u mutation checks passed\n",
+        // Exercise the online board's real CMO path. Probe an Invalid identity
+        // so final requester state alone cannot detect a still-live Snoop.
+        for (const auto kind : {TestActionKind::Clean, TestActionKind::Flush, TestActionKind::Invalidate}) {
+            compactchi::ArchitecturalBoard cmoBoard(context, 8);
+            cmoBoard.initialize(0x3000, initial);
+            TestAction cmo{kind, 0x3000, 1, true};
+            cmoBoard.issueControl({0, 1}, cmo);
+            cmoBoard.issueSnoop({1, 2}, 1, 0x3000, true);
+            reject([&] { cmoBoard.controlComplete({0, 1}, 4, 0, true); });
+            cmoBoard.snoopResponse({1, 2}, 0, true);
+            cmoBoard.controlComplete({0, 1}, 4, 0, true);
+            require(cmoBoard.idle(), "completed CMO retained a Snoop/control owner");
+        }
+        // A clean valid snoopee may return two data beats. Its already legal
+        // state must not permit CompCMO to retire after just the first beat.
+        compactchi::ArchitecturalBoard partialBoard(context, 8);
+        partialBoard.initialize(0x4000, initial);
+        partialBoard.issue({0, 3}, compactchi::ReadClass::Shared, 0x4000, false);
+        partialBoard.data({0, 3}, 0, 4, 1, false, initial.data());
+        partialBoard.data({0, 3}, 1, 4, 1, false, initial.data() + 32);
+        partialBoard.compAck(0, 4, false);
+        partialBoard.issueControl({0, 5}, {TestActionKind::Clean, 0x4000, 5, true});
+        partialBoard.issueSnoop({0, 6}, 2, 0x4000, true);
+        partialBoard.snoopData({0, 6}, 1, 1, true, initial.data() + 32);
+        reject([&] { partialBoard.controlComplete({0, 5}, 4, 0, true); });
+        partialBoard.snoopData({0, 6}, 0, 1, true, initial.data());
+        partialBoard.controlComplete({0, 5}, 4, 0, true);
+        require(partialBoard.idle(), "two-beat CMO Snoop failed to retire");
+        std::printf("ArchitecturalBoard: legal reads, Compact Snoops, online CMO Snoop retirement, terminal state and %u mutation checks passed\n",
                     rejectedMutations);
         return 0;
     } catch (const std::exception& e) {

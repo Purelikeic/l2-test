@@ -305,6 +305,7 @@ void ArchitecturalBoard::controlComplete(RequestKey key, unsigned opcode, unsign
         require(c.sent == required, "write completion preceded all data");
     }
     if (cmo) {
+        require(!snoopOwners.count(c.action.address), "CompCMO preceded same-line Snoop retirement");
         const auto& state = nodeLine(c.action.address);
         require(kind == TestActionKind::Clean ? state.permission != Permission::UD : !state.owner,
             "CMO completion left an illegal requester state");
