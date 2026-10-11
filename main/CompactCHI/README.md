@@ -24,17 +24,19 @@ transition modeling remain open.
 
 check-datastorage.py checks the consecutive, coordinate-complete sweep, continued
 resource drain, geometry and independently defined versions. The independent
-replay also emits a per-line transition ledger: known bytes must have an initial
-state followed by refill or retained Snoop-data; CMO/Evict/WriteBack discard and
-MakeUnique no-data transitions are recorded separately. CleanShared preservation
-is distinct from invalidation. A terminal valid line cannot end in a discard
-transition; a later independent refill is required to restore it. This prevents
-a DUT response from becoming expected data merely because it was observed. It
-rejects data corruption at both ends of both beats, scan gaps, missing/extra rows,
-bad errors and resource leaks. The host fixture covers refill plus clean
-preservation, invalidation/eviction combinations and malformed transition order.
-The retained Directory, Requester/Home and global guard boundaries still apply.
-PBOP/VBOP, second-owner admission and unsupported protocols are unchanged.
+replay also emits a per-line transition ledger. It distinguishes the two
+WriteBack roles: upstream L1-to-L2 WriteBackFull is
+`upstream-writeback-install` and may leave a valid UD line; downstream victim
+WriteBack is `writeback-discard` and must leave the line invalid. CleanShared
+preservation is distinct from invalidation. A terminal valid line cannot end in
+a discard transition; a later independent refill is required to restore it.
+This prevents a DUT response from becoming expected data merely because it was
+observed. It rejects data corruption at both ends of both beats, scan gaps,
+missing/extra rows, bad errors and resource leaks. The host fixture covers refill
+plus clean preservation, both WriteBack directions, invalidation/eviction
+combinations and malformed transition order. The retained Directory,
+Requester/Home and global guard boundaries still apply. PBOP/VBOP, second-owner
+admission and unsupported protocols are unchanged.
 
 ## Retained terminal Directory client footprint boundary
 

@@ -168,7 +168,7 @@ def check(root, events, seed, topo, terminal=None):
                     q["beats"].add(beat)
                     if a["kind"] == 4 and q["beats"] == {0, 1}:
                         l2_data[a["address"]] = latest[a["address"]]
-                        transitions[a["address"]].append("refill")
+                        transitions[a["address"]].append("upstream-writeback-install")
                         undefined_storage.discard(a["address"])
                         copies.pop((owner[0], a["address"]), None)
                         if q["complete"]: retire(owner)
