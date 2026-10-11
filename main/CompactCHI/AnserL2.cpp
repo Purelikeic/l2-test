@@ -153,6 +153,16 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
             (!victimProfile || victim.complete()) && forwardNode.idle() && resourceSnapshot().empty() &&
             !dut.io_downReq_valid && !dut.io_upSnp_valid;
     }
+    void writeForwardEvidence() const {
+        std::ofstream stream(output / "forward.jsonl");
+        if (!stream) throw std::runtime_error("cannot open forward endpoint evidence");
+        for (const auto& row : forwardNode.observations())
+            stream << "{\"kind\":\"" << row.kind << "\",\"cycle\":" << row.cycle
+                   << ",\"txn\":" << row.txn << ",\"dbid\":" << row.dbid
+                   << ",\"source\":" << row.source << ",\"target\":" << row.target
+                   << ",\"beat\":" << row.beat << ",\"trace_tag\":" << (row.traceTag ? "true" : "false") << "}\n";
+        if (!stream) throw std::runtime_error("forward endpoint evidence write failed");
+    }
     void maintain() {
         if (auto ack = forwardNode.tick(cycle()))
             lowerBoard->forwardCompAck(ack->source, ack->target, ack->txn, ack->traceTag);
@@ -175,6 +185,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
         }
         if (dataStorageScan && dataStorage->complete()) {
             dataStorage->finish();
+            writeForwardEvidence();
             resources->finish();
             if (victimProfile) {
                 const auto expected = compactchi::VictimProfile::dirty(cfg->seed, cfg->memoryStart);

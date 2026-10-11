@@ -117,6 +117,19 @@ else:
         forwarded = [r for r in events if r["direction"] == "chi_tx_rsp" and r["txn_id"] == 2049 and r["handshake"]]
         assert len(forwarded) == 1 and forwarded[0]["opcode"] == 9 and forwarded[0]["resp"] == 0 and forwarded[0]["forward_state"] == 2
 
+if lower_profile:
+    forward_rows = [json.loads(line) for line in (root / "forward.jsonl").read_text().splitlines()]
+    dct_rows = [r for r in events if r["handshake"] and r["direction"] == "chi_tx_dat" and r["target"] == 12 and r["opcode"] == 4]
+    assert len(forward_rows) == 3 and len(dct_rows) == 2
+    for f, d in zip(forward_rows[:2], sorted(dct_rows, key=lambda r: r["cycle"])):
+        assert f["kind"] == "data" and f["cycle"] == d["cycle"] and f["txn"] == d["txn_id"]
+        assert f["dbid"] == d["dbid"] and f["source"] == d["node"] and f["target"] == d["target"]
+        assert f["beat"] == d["data_id"] // 2 and f["trace_tag"] == d["trace_tag"]
+    ack = forward_rows[2]
+    assert ack["kind"] == "ack" and ack["cycle"] == max(r["cycle"] for r in dct_rows) + 1
+    assert ack["txn"] == dct_rows[0]["dbid"] and ack["dbid"] == dct_rows[0]["dbid"]
+    assert ack["source"] == 12 and ack["target"] == 8 and ack["trace_tag"] == dct_rows[0]["trace_tag"]
+
 architectural_tools = runpy.run_path(str(Path(__file__).with_name("check-architectural-state.py")))
 architectural_evidence = architectural_tools["check"](root, events, seed, topo)
 architectural_evidence["mutationRejections"] = architectural_tools["mutations"](root, events, seed, topo)
