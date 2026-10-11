@@ -35,7 +35,7 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
         if address in known:
             assert stores, (address, sequence)
         if address in undefined:
-            assert not stores and "makeunique-no-data" in sequence and (not discards or sequence[-1] == "cmo-or-eviction-discard"), (address, sequence)
+            assert not stores and "makeunique-no-data" in sequence and (not discards or sequence[-1] in ("evict-discard", "writeback-discard", "victim-evict-discard", "victim-writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")), (address, sequence)
     checked, unknown, invalid = 0, [], 0
     valid_addresses = set()
     for index, (meta, data) in enumerate(zip(directory, samples)):
@@ -61,9 +61,11 @@ def check(directory_rows, rows, resources, versions, undefined=(), transitions=(
             assert actual == known[address], (address, "DataStorage differs from independent expected version")
             checked += 1
     for address, sequence in transition_map.items():
-        discards = [kind for kind in sequence if kind in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
+        discards = [kind for kind in sequence if kind in ("evict-discard", "writeback-discard", "victim-evict-discard", "victim-writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
         if address in valid_addresses and address in known:
-            assert not discards or max(i for i, kind in enumerate(sequence) if kind in ("refill", "snoop-data", "upstream-writeback-install")) > max(i for i, kind in enumerate(sequence) if kind in ("evict-discard", "writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")), (address, sequence)
+            stores = [i for i, kind in enumerate(sequence) if kind in ("refill", "snoop-data", "upstream-writeback-install")]
+            discard_indices = [i for i, kind in enumerate(sequence) if kind in ("evict-discard", "writeback-discard", "victim-evict-discard", "victim-writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard")]
+            assert not discard_indices or stores and max(stores) > max(discard_indices), (address, sequence)
         if discards and sequence[-1] in ("evict-discard", "writeback-discard", "victim-evict-discard", "victim-writeback-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard"):
             assert address not in valid_addresses, (address, sequence, "discarded line remains valid")
     return dict(scanCycles=len(samples), observedSlots=len(samples) * slices, checkedLines=checked,
@@ -109,7 +111,7 @@ def mutations(directory, rows, resources, versions, undefined=(), transitions=()
     if transitions:
         broken = copy.deepcopy(transitions)
         for entry in broken:
-            entry["transitions"] = [kind for kind in entry["transitions"] if kind not in ("refill", "snoop-data", "upstream-writeback-install", "writeback")]
+            entry["transitions"] = [kind for kind in entry["transitions"] if kind not in ("refill", "snoop-data", "upstream-writeback-install", "writeback", "victim-writeback-discard", "victim-evict-discard")]
             if entry["address"] in {v["address"] for v in versions}:
                 try: check(directory, rows, resources, versions, undefined, broken)
                 except (AssertionError, KeyError, ValueError): pass
