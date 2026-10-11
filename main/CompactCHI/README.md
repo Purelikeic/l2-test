@@ -36,6 +36,37 @@ they provide no native joint CMO/DCT interaction coverage. The new host target
 is part of tester-foundation. Existing ForwardNodeBoard, forward.jsonl format,
 check-forward.py and their 15 observations / 35 mutations remain unchanged.
 
+## Round 2 generated transition boundary
+
+The independent replay now emits `l2TransitionEvents` beside the per-line string
+ledger. Each generated source records its accepted canonical event, original
+request, action identity where applicable, transferred expected bytes and the
+retained L2 version. check-transitions.py binds those identities back to canonical
+handshakes, requires both DAT beats, enforces their order and cross-checks the
+terminal client footprint and DataStorage version model. It adds
+`transitionEvidence` with exact source counts, generated sequences and mutations.
+
+Upstream EVT Evict is `evict-client-release`: it releases the requester copy and
+preserves the modeled L2 bytes. CMO copyback is `cmo-writeback-commit`, not victim
+removal. CMO-triggered downstream Evict is distinct from replacement Evict.
+Invalidating Snoop data is recorded as `snoop-data-transient`, with transferred
+bytes checked independently but no invented SRAM installation. MakeUnique's
+no-data transition is recorded at CompAck after its Compact grant, with Home
+completion checked whenever a downstream MakeUnique request was generated.
+
+Terminal constraints cover invalidating/discard sources, clean state after a
+terminal CleanShared, UD after a terminal upstream WriteBack installation, and
+UC/Unique client for terminal no-data MakeUnique. Complete non-client residency
+and all combinations remain open. No observed victim way or DUT data supplies an
+expected value. The new `compactchi-transition-test` foundation target generates
+only bounded transport/state histories; it is not a DUT equivalence test.
+
+An existing RTL gap remains outside this checker-only round: the local upstream
+EVT Evict path completes without the client-clearing Meta write specified in
+MainPipe.md and CoupledL2. Current retained native Evict sequences have later
+Snoops; terminal-at-Evict client removal is excluded and requires a separate RTL
+repair decision. This round does not repair control or protocol behavior.
+
 ## Current DataStorage terminal version boundary
 
 SRAM/DataStorage expose a current indexed storage read through Slice/top using
@@ -65,7 +96,9 @@ WriteBack roles: upstream L1-to-L2 WriteBackFull is
 `upstream-writeback-install` and may leave a valid UD line; downstream victim
 WriteBack is `victim-writeback-discard` and clean victim eviction is
 `victim-evict-discard`, both must leave the line invalid. CleanShared
-preservation is distinct from invalidation. A terminal valid line cannot end in
+preservation and CMO writeback commitment are distinct from invalidation.
+An upstream Evict preserves the L2 version while releasing the requester copy.
+A terminal valid line cannot end in
 a discard transition; a later independent refill is required to restore it.
 This prevents a DUT response from becoming expected data merely because it was
 observed. It rejects data corruption at both ends of both beats, scan gaps,

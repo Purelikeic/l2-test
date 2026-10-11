@@ -147,6 +147,10 @@ directory_evidence["mutationRejections"] = directory_tools["mutations"](director
 data_tools = runpy.run_path(str(Path(__file__).with_name("check-datastorage.py")))
 data_evidence = data_tools["check"](directory_rows, data_rows, resource_rows, architectural_evidence["l2DataVersions"], architectural_evidence["l2UndefinedStorage"], architectural_evidence["l2Transitions"])
 data_evidence["mutationRejections"] = data_tools["mutations"](directory_rows, data_rows, resource_rows, architectural_evidence["l2DataVersions"], architectural_evidence["l2UndefinedStorage"], architectural_evidence["l2Transitions"])
+transition_tools = runpy.run_path(str(Path(__file__).with_name("check-transitions.py")))
+actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
+transition_evidence = transition_tools["check"](events, actions, architectural_evidence, directory_rows)
+transition_evidence["mutations"] = transition_tools["mutations"](events, actions, architectural_evidence, directory_rows)
 transition_map = {row["address"]: row["transitions"] for row in architectural_evidence["l2Transitions"]}
 for cmo in cmo_evidence["evidence"]:
     required = {5: "cmo-cleanshared-preserve", 6: "cmo-cleaninvalid-discard", 7: "cmo-makeinvalid-discard"}[cmo["kind"]]
@@ -281,7 +285,8 @@ evidence = {"profile": profile, "seed": seed,
             "scope": scopes[profile], "nodeEvidence": node_evidence, "resourceEvidence": resource_evidence,
             "architecturalEvidence": architectural_evidence, "directoryEvidence": directory_evidence,
             "dataStorageEvidence": data_evidence, "forwardEvidence": forward_evidence,
-            "cmoEvidence": cmo_evidence, "cmoForwardEvidence": cmo_forward_evidence}
+            "cmoEvidence": cmo_evidence, "cmoForwardEvidence": cmo_forward_evidence,
+            "transitionEvidence": transition_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

@@ -11,6 +11,27 @@ def check(root, events, seed, topo, terminal=None):
     latest, memory, devices, copies = {}, {}, {}, {}
     l2_data, down_reads, undefined_storage = {}, {}, set()
     transitions = defaultdict(list)
+    transition_events = []
+    event_indices = {id(r): i for i, r in enumerate(events)}
+    action_indices = {id(a): i for i, a in enumerate(actions)}
+
+    def transition(kind, address, event=None, origin=None, owner=None, payload=None):
+        transitions[address].append(kind)
+        action = owner["action"] if owner else None
+        transition_events.append(dict(kind=kind, address=address, cycle=event["cycle"] if event else None,
+            eventIndex=event_indices[id(event)] if event else None,
+            originIndex=event_indices[id(origin)] if origin else None,
+            actionIndex=action_indices[id(action)] if action else None,
+            actionRequestIndex=event_indices[id(owner["request"])] if owner else None,
+            data=l2_data[address].hex() if address in l2_data else None,
+            payload=payload.hex() if payload is not None else
+                    l2_data[address].hex() if kind in ("refill", "snoop-data", "upstream-writeback-install") else None))
+
+    def line_owner(address, kinds=None):
+        owners = [q for q in requests.values() if q["action"]["address"] == address and
+                  (kinds is None or q["action"]["kind"] in kinds)]
+        assert len(owners) <= 1, "transition has ambiguous active action identity"
+        return owners[0] if owners else None
     requests, snoops, acks, writes, write_dbids = {}, {}, {}, {}, {}
     roles = {n["id"]: n["kind"] for n in topo["nodes"]}
 
@@ -19,7 +40,7 @@ def check(root, events, seed, topo, terminal=None):
         if address not in latest:
             latest[address] = bytes(((address >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
             memory[address] = latest[address]
-            transitions[address].append("initial")
+            transition("initial", address)
         return address
 
     # prepare() initializes cache lines even when an API attempt is Deferred.
@@ -33,7 +54,10 @@ def check(root, events, seed, topo, terminal=None):
 
     def snoop_finish(key, resp):
         s = snoops.pop(key)
-        if not s["beats"]: transitions[s["address"]].append("snoop-no-data")
+        assert r["target"] == s["request"]["node"] and r["trace_tag"] == s["request"]["trace_tag"] and r["resp_err"] == 0
+        assert (not s["beats"] if r["direction"] == "cchi_rx_rsp" else s["beats"] == {0, 1})
+        if not s["beats"]:
+            transition("snoop-no-data", s["address"], r, s["request"], s["owner"])
         owner = key[0], s["address"]
         if resp & 3:
             assert owner in copies
@@ -68,12 +92,14 @@ def check(root, events, seed, topo, terminal=None):
                         devices[address] = bytes(data)
                 else:
                     initialize(address)
-                requests[key] = dict(action=a, beats=set(), dbid=None, resp=None, complete=False)
+                assert r["cycle"] > a["cycle"] and r["address"] == a["address"] and r["trace_tag"] == a["trace_tag"]
+                expected_op = {0: 4, 1: 16, 2: 18, 3: 0, 4: 1, 5: 12, 6: 13, 7: 14, 8: 3, 9: 2, 10: 9 if a["size"] == 6 else 8}[a["kind"]]
+                assert op == expected_op and d == ("cchi_rx_evt" if a["kind"] in (3, 4) else "cchi_rx_req")
+                requests[key] = dict(action=a, request=r, beats=set(), dbid=None, resp=None, complete=False)
                 if a["kind"] == 3: copies.pop((key[0], address))
                 if a["kind"] == 2:
                     l2_data.pop(address, None)
                     undefined_storage.add(address) # MakeUnique installs permission without data.
-                    transitions[address].append("makeunique-no-data")
             elif d == "cchi_tx_dat":
                 key = r["target"], r["txn_id"]
                 q = requests[key]
@@ -120,13 +146,18 @@ def check(root, events, seed, topo, terminal=None):
                     q["complete"] = True
                 else:
                     assert op == (4 if a["kind"] in (5, 6, 7) else 1)
+                    if a["kind"] in (5, 6, 7):
+                        assert all(s["address"] != a["address"] for s in snoops.values()), "CompCMO preceded nested Snoop retirement"
                     if a["kind"] == 7: latest[a["address"]] = memory[a["address"]]
                     if a["kind"] == 5: assert all(p != 3 for (n, addr), (p, data) in copies.items() if addr == a["address"])
-                    if a["kind"] in (3, 6, 7):
+                    if a["kind"] in (6, 7):
                         l2_data.pop(a["address"], None)
-                        transitions[a["address"]].append({3: "evict-discard", 6: "cmo-cleaninvalid-discard", 7: "cmo-makeinvalid-discard"}[a["kind"]])
-                    elif a["kind"] == 5:
-                        transitions[a["address"]].append("cmo-cleanshared-preserve")
+                        undefined_storage.discard(a["address"])
+                        transition({6: "cmo-cleaninvalid-discard", 7: "cmo-makeinvalid-discard"}[a["kind"]],
+                                   a["address"], r, q["request"], q)
+                    elif a["kind"] in (3, 5):
+                        transition({3: "evict-client-release", 5: "cmo-cleanshared-preserve"}[a["kind"]],
+                                   a["address"], r, q["request"], q)
                     if a["kind"] in (6, 7): assert all(addr != a["address"] for n, addr in copies)
                     if a["kind"] in (4, 10): assert q["beats"] == ({0, 1} if a["size"] == 6 else {(a["address"] >> 5) & 1})
                     retire(key)
@@ -139,12 +170,14 @@ def check(root, events, seed, topo, terminal=None):
                     assert q["complete"]
                     latest[a["address"]] = bytes.fromhex(a["data"])
                     copies[key[0], a["address"]] = (3, latest[a["address"]])
+                    transition("makeunique-no-data", a["address"], r, q["request"], q)
                 else: assert q["beats"] == {0, 1}
                 retire(key)
             elif d == "cchi_tx_snp":
                 key = r["target"], r["txn_id"]
                 assert key not in snoops and roles[key[0]] == 0
-                snoops[key] = dict(address=initialize(r["address"]), beats=set(), opcode=op)
+                snoops[key] = dict(address=initialize(r["address"]), beats=set(), opcode=op,
+                                   request=r, owner=line_owner(r["address"]), resp=None)
             elif d == "cchi_rx_rsp" and op == 1:
                 snoop_finish((r["node"], r["txn_id"]), r["resp"])
             elif d == "cchi_rx_dat":
@@ -152,23 +185,36 @@ def check(root, events, seed, topo, terminal=None):
                 beat = r["data_id"]
                 if op == 3:
                     s = snoops[key]
-                    assert beat not in s["beats"] and bytes.fromhex(r["data"]) == latest[s["address"]][beat * 32:(beat + 1) * 32]
+                    assert beat in (0, 1) and beat not in s["beats"] and r["target"] == s["request"]["node"]
+                    assert r["trace_tag"] == s["request"]["trace_tag"] and r["resp_err"] == 0
+                    assert s["resp"] in (None, r["resp"]) and bytes.fromhex(r["data"]) == latest[s["address"]][beat * 32:(beat + 1) * 32]
+                    s["resp"] = r["resp"]
                     s["beats"].add(beat)
                     if s["beats"] == {0, 1}:
                         if r["resp"] & 3:
                             l2_data[s["address"]] = latest[s["address"]]
-                            transitions[s["address"]].append("snoop-data")
+                            transition("snoop-data", s["address"], r, s["request"], s["owner"])
                             undefined_storage.discard(s["address"])
+                        else:
+                            # Invalidating Snoop data is buffered for its parent
+                            # obligation; it does not independently install SRAM.
+                            transition("snoop-data-transient", s["address"], r, s["request"], s["owner"], latest[s["address"]])
                         snoop_finish(key, r["resp"])
                 else:
                     owners = [k for k, q in requests.items() if k[0] == key[0] and q["dbid"] == key[1] and q["action"]["kind"] in (4, 10)]
                     assert len(owners) == 1
                     owner = owners[0]; q = requests[owner]; a = q["action"]
-                    assert beat not in q["beats"]
+                    assert beat in (0, 1) and beat not in q["beats"] and r["target"] == q["request"]["target"]
+                    assert r["trace_tag"] == a["trace_tag"] and r["resp_err"] == 0
+                    if a["kind"] == 4:
+                        assert op == 2 and r["resp"] == 6 and r["byte_enable"] == 0xffffffff
+                        # WriteBack API data is unused: Requester snapshots its
+                        # owned copy. Replay uses the prior independent Store intent.
+                        assert bytes.fromhex(r["data"]) == latest[a["address"]][beat * 32:(beat + 1) * 32]
                     q["beats"].add(beat)
                     if a["kind"] == 4 and q["beats"] == {0, 1}:
                         l2_data[a["address"]] = latest[a["address"]]
-                        transitions[a["address"]].append("upstream-writeback-install")
+                        transition("upstream-writeback-install", a["address"], r, q["request"], q)
                         undefined_storage.discard(a["address"])
                         copies.pop((owner[0], a["address"]), None)
                         if q["complete"]: retire(owner)
@@ -177,12 +223,16 @@ def check(root, events, seed, topo, terminal=None):
                 if op in (7, 0x26):
                     key = r["node"], r["txn_id"]
                     if key not in down_reads:
-                        down_reads[key] = dict(address=r["address"], expected=memory[r["address"]], beats=set())
-                    else: assert down_reads[key]["address"] == r["address"]
+                        down_reads[key] = dict(address=r["address"], expected=memory[r["address"]], beats=set(),
+                                               request=r, owner=line_owner(r["address"]))
+                    else:
+                        assert down_reads[key]["address"] == r["address"] and not down_reads[key]["beats"], "refill identity reused after partial data"
+                        assert down_reads[key]["owner"] is line_owner(r["address"]), "refill reissue changed its action owner"
                 if op in (0x0d, 0x17, 0x1b, 0x42, 0x1c, 0x1d):
                     writes[r["node"], r["txn_id"]] = dict(opcode=op, address=r["address"], size=6 if op not in (0x1c, 0x1d) else
                         next(q["action"]["size"] for q in requests.values() if q["action"]["kind"] == 10 and q["action"]["address"] == r["address"]),
-                        device=op in (0x1c, 0x1d), beats=set())
+                        device=op in (0x1c, 0x1d), beats=set(), request=r,
+                        owner=line_owner(r["address"], (5, 6)))
             elif d == "chi_rx_dat" and (r["target"], r["txn_id"]) in down_reads:
                 key = r["target"], r["txn_id"]
                 q = down_reads[key]
@@ -193,14 +243,16 @@ def check(root, events, seed, topo, terminal=None):
                 q["beats"].add(beat)
                 if q["beats"] == {0, 1}:
                     l2_data[q["address"]] = q["expected"]
-                    transitions[q["address"]].append("refill")
+                    transition("refill", q["address"], r, q["request"], q["owner"])
                     undefined_storage.discard(q["address"])
                     del down_reads[key]
             elif d == "chi_rx_rsp" and op == 4:
                 entry = writes.pop((r["target"], r["txn_id"]), None)
                 if entry and entry["opcode"] in (0x0d, 0x42):
                     l2_data.pop(entry["address"], None)
-                    transitions[entry["address"]].append("victim-evict-discard")
+                    undefined_storage.discard(entry["address"])
+                    transition("cmo-evict-discard" if entry["owner"] else "victim-evict-discard",
+                               entry["address"], r, entry["request"], entry["owner"])
             elif d == "chi_rx_rsp" and op == 5:
                 key = r["target"], r["txn_id"]
                 assert key in writes
@@ -222,8 +274,12 @@ def check(root, events, seed, topo, terminal=None):
                 if q["beats"] == required:
                     if not q["device"]: memory[q["address"]] = latest[q["address"]]
                     if not q["device"] and q["opcode"] in (0x17, 0x1b, 0x42):
-                        l2_data.pop(q["address"], None)
-                        transitions[q["address"]].append("victim-writeback-discard")
+                        if q["owner"]:
+                            transition("cmo-writeback-commit", q["address"], r, q["request"], q["owner"], latest[q["address"]])
+                        else:
+                            l2_data.pop(q["address"], None)
+                            undefined_storage.discard(q["address"])
+                            transition("victim-writeback-discard", q["address"], r, q["request"], payload=latest[q["address"]])
                     del write_dbids[r["txn_id"]]
             elif d == "chi_tx_dat" and op == 1 and r["target"] == 8:
                 # Existing lower-Snoop Home sink commits through MemoryAgent;
@@ -249,6 +305,7 @@ def check(root, events, seed, topo, terminal=None):
     assert terminal["observed"] == expected, "actual Requester/Home terminal storage differs from independent replay"
     assert terminal["cycle"] >= max(by_cycle)
     return dict(l2UndefinedStorage=sorted(undefined_storage),
+                l2TransitionEvents=transition_events,
                 l2Transitions=[dict(address=a, transitions=transitions[a]) for a in sorted(transitions)],
                 l2DataVersions=[dict(address=a, data=data.hex()) for a, data in sorted(l2_data.items())],
                 requesterFootprint=[dict(node=n, address=a, clientState=1 if p == 1 else 2) for (n, a), (p, data) in sorted(copies.items())],

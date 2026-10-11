@@ -426,6 +426,11 @@ compactchi-cmo-forward-test:
 	$(COMPACTCHI_CHECK_DIR)/cmo-forward-test $(COMPACTCHI_CHECK_DIR)/cmo-forward/forward.jsonl
 	python3 $(CURDIR)/main/CompactCHI/CMOForwardCheckerTest.py $(COMPACTCHI_CHECK_DIR)/cmo-forward
 
+.PHONY: compactchi-transition-test
+compactchi-transition-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)/transitions
+	python3 $(CURDIR)/main/CompactCHI/TransitionCheckerTest.py $(COMPACTCHI_CHECK_DIR)/transitions
+
 .PHONY: compactchi-resource-test
 compactchi-resource-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)
