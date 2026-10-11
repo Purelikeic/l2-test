@@ -16,6 +16,10 @@ template<class T> void field(std::ostream& stream, const char* key, const std::o
     stream << ",\"" << key << "\":";
     if (value) stream << *value; else stream << "null";
 }
+void flag(std::ostream& stream, const char* key, const std::optional<bool>& value) {
+    stream << ",\"" << key << "\":";
+    if (value) stream << (*value ? "true" : "false"); else stream << "null";
+}
 }
 CanonicalTrace::CanonicalTrace(const std::filesystem::path& prefix, unsigned seed) : seed(seed) {
     if (prefix.has_parent_path()) std::filesystem::create_directories(prefix.parent_path());
@@ -53,6 +57,14 @@ void CanonicalTrace::record(const CanonicalEvent& event) {
     field(jsonl, "forward_node", event.forwardNode);
     field(jsonl, "forward_txn", event.forwardTxn);
     field(jsonl, "byte_enable", event.byteEnable);
+    flag(jsonl, "allow_retry", event.allowRetry);
+    flag(jsonl, "exp_comp_ack", event.expCompAck);
+    flag(jsonl, "ns", event.ns);
+    flag(jsonl, "likely_shared", event.likelyShared);
+    field(jsonl, "p_crd_type", event.pCrdType);
+    field(jsonl, "size", event.size);
+    field(jsonl, "mem_attr", event.memAttr);
+    field(jsonl, "order", event.order);
     jsonl << ",\"dirty\":";
     if (event.dirty) jsonl << (*event.dirty ? "true" : "false"); else jsonl << "null";
     jsonl << ",\"data\":";

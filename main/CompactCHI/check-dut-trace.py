@@ -27,6 +27,9 @@ base = topo["memoryStart"]
 coherent = [n["id"] for n in topo["nodes"] if n["kind"] == 0 and n["mode"] != 0]
 transient = [n["id"] for n in topo["nodes"] if n["kind"] == 1 and n["mode"] != 0]
 node_evidence = node_check["check"](root, events, seed, action_mode=profile == "node-actions")
+transport_tools = runpy.run_path(str(Path(__file__).with_name("check-transport.py")))
+transport_evidence = transport_tools["check"](events)
+transport_evidence["mutationRejections"] = transport_tools["mutations"](events)
 if profile in ("node-actions", "configured"):
     expected_requests = sum(r["direction"] == "cchi_rx_req" and r["handshake"] for r in events)
     latency = {}
@@ -227,7 +230,10 @@ def check_time():
         for field, suffix in (("dbid", "dbID"), ("data_id", "dataID"), ("resp", "resp"),
                               ("resp_err", "respErr"), ("data_source", "dataSource"),
                               ("forward_state", "fwdState"), ("home_node", "homeNID"),
-                              ("forward_node", "fwdNID"), ("forward_txn", "fwdTxnID"), ("byte_enable", "byteEnable")):
+                              ("forward_node", "fwdNID"), ("forward_txn", "fwdTxnID"), ("byte_enable", "byteEnable"),
+                              ("allow_retry", "allowRetry"), ("exp_comp_ack", "expCompAck"),
+                              ("p_crd_type", "pCrdType"), ("size", "size"), ("mem_attr", "memAttr"),
+                              ("order", "order"), ("ns", "ns"), ("likely_shared", "likelyShared")):
             if row[field] is not None:
                 expected[prefix + "_bits_" + suffix] = row[field]
         if prefix + "_bits_tgtID" in symbols:
@@ -286,7 +292,7 @@ evidence = {"profile": profile, "seed": seed,
             "architecturalEvidence": architectural_evidence, "directoryEvidence": directory_evidence,
             "dataStorageEvidence": data_evidence, "forwardEvidence": forward_evidence,
             "cmoEvidence": cmo_evidence, "cmoForwardEvidence": cmo_forward_evidence,
-            "transitionEvidence": transition_evidence}
+            "transitionEvidence": transition_evidence, "transportEvidence": transport_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

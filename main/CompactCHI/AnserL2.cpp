@@ -97,6 +97,15 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
             event.byteEnable = dut.io_downTxDat_bits_byteEnable;
         }
         if (channel == compactchi::Channel::ChiTxRsp) event.forwardState = dut.io_downTxRsp_bits_fwdState;
+        if (channel == compactchi::Channel::ChiTxReq) {
+            const auto request = downRequest();
+            event.allowRetry = request.allowRetry; event.expCompAck = request.expCompAck;
+            event.pCrdType = request.pCrdType; event.size = request.size;
+            event.memAttr = request.memAttr; event.order = request.order;
+            event.ns = request.ns; event.likelyShared = request.likelyShared;
+        }
+        if (channel == compactchi::Channel::ChiRxRsp) event.pCrdType = dut.io_downRsp_bits_pCrdType;
+        if (channel == compactchi::Channel::ChiTxRsp) event.pCrdType = dut.io_downTxRsp_bits_pCrdType;
         if (channel == compactchi::Channel::ChiRxDat) event.homeNode = dut.io_downDat_bits_homeNID;
         if (channel == compactchi::Channel::ChiRxSnp) {
             event.forwardNode = dut.io_downSnp_bits_fwdNID;
@@ -515,7 +524,7 @@ public:
                 dut.io_downDat_bits_data[w] = value;
             }
         }
-        dut.io_upDat_ready = random() % 4 != 0; dut.io_upRsp_ready = 1;
+        dut.io_upDat_ready = random() % 4 != 0; dut.io_upRsp_ready = random() % 4 != 0;
         dut.io_upSnp_ready = requester->snoopReady(); dut.io_downTxRsp_ready = random() % 4 != 0;
         dut.io_downTxDat_ready = random() % 4 != 0;
         dut.io_downReq_ready = 0;

@@ -19,6 +19,9 @@ int main(int argc, char** argv) {
         event.dataSource = 3;
         event.prefetchSource = 0;
         event.dirty = false;
+        event.allowRetry = false; event.expCompAck = true; event.pCrdType = 3;
+        event.size = 6; event.memAttr = 0xd; event.order = 0;
+        event.ns = false; event.likelyShared = true;
         event.data = std::array<uint8_t, 32>{};
         for (unsigned i = 0; i < 32; ++i) (*event.data)[i] = uint8_t(i ^ 0xa5);
         trace.record(event);

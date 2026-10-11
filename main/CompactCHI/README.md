@@ -70,6 +70,41 @@ Comp. MainPipeSpec checks metadata preservation and miss/channel/replay guards.
 This closes the local serialized path; arbitrary Evict/MSHR overlap remains
 outside the supported endpoint scope and no nested ownership interface is added.
 
+## Round 3 transport matrix boundary
+
+Canonical events now record downstream AllowRetry, PCrdType, ExpCompAck and the
+request attributes that must remain stable across retry. These are read-only
+wire observations and are aligned to actual top-level VCD ports. The native
+harness also applies finite upstream RSP backpressure, in addition to the existing
+DAT and downstream acknowledgment stalls. No RTL or Directory rule is changed.
+
+check-transport.py audits every profile's stalled offers and accepted transport
+obligations. Credits are counted by requester/issuer/type, never grant TxnID;
+accepted reissues consume one matching credit and preserve request attributes.
+Read acquisition, control and victim write contexts retain separate roles even
+when their numeric TxnIDs coincide. Combined CompData uses DAT HomeNID/DBID and
+accumulated TraceTag; separated completion uses RespSepData SrcID/DBID/TraceTag
+only after both halves are accepted. Dataless Comp and clean victim Comp retain
+their own acknowledgment contexts, with acquisition Ack before victim Ack.
+Upstream WriteBack joins DBID, full DAT and split/combined completion, including
+a final DAT and split Comp accepted in the same cycle.
+
+`compactchi-transport-test` uses the existing EbHome/Requester implementations to
+generate thirty endpoint cases: combined/separated reads, response-first,
+between-beat and data-first completion, early/late credit, distinct issuer/type,
+fungible/outliving credit, reused acquisition/victim TxnID, no-data permission,
+and upstream split/combined WriteBack. Additional explicit host trace variants
+cover unrelated credit TxnID, separated RSP/DAT identity/tag differences,
+per-beat combined TraceTag accumulation, alternating line beats and the existing
+MMIO split completion interface. These variants are transport-audit inputs, not
+new production Home behavior or DUT coverage claims.
+
+Normal-profile OK responses, bounded admitted lines and existing supported
+operations are the acceptance scope. Unsupported operations remain rejected.
+Full errors, nested same-line overlap, arbitrary topology and complete Directory
+residency remain outside this checker. Native and host coverage are reported
+separately; global-test remains guarded.
+
 ## Current DataStorage terminal version boundary
 
 SRAM/DataStorage expose a current indexed storage read through Slice/top using

@@ -431,6 +431,18 @@ compactchi-transition-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)/transitions
 	python3 $(CURDIR)/main/CompactCHI/TransitionCheckerTest.py $(COMPACTCHI_CHECK_DIR)/transitions
 
+.PHONY: compactchi-transport-test
+compactchi-transport-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)/transport
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/TransportMatrixTest.cpp \
+		$(CURDIR)/main/CompactCHI/CanonicalTrace.cpp $(CURDIR)/main/CompactCHI/EbHome.cpp \
+		$(CURDIR)/main/Memory/CHIHomeMemory.cpp $(CURDIR)/main/Memory/MemoryAgent.cpp \
+		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/RequesterActions.cpp \
+		$(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp $(CURDIR)/main/Base/TLGlobal.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/transport-matrix-test
+	$(COMPACTCHI_CHECK_DIR)/transport-matrix-test $(COMPACTCHI_CHECK_DIR)/transport
+	python3 $(CURDIR)/main/CompactCHI/TransportCheckerTest.py $(COMPACTCHI_CHECK_DIR)/transport
+
 .PHONY: compactchi-resource-test
 compactchi-resource-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)

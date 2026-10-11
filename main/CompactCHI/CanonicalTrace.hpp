@@ -27,6 +27,8 @@ struct CanonicalEvent {
     std::optional<uint32_t> byteEnable;
     std::optional<bool> dirty;
     std::optional<std::array<uint8_t, 32>> data;
+    std::optional<bool> allowRetry, expCompAck, ns, likelyShared;
+    std::optional<unsigned> pCrdType, size, memAttr, order;
 };
 
 /** JSONL/text transport or semantic event sink, without any database dependency.

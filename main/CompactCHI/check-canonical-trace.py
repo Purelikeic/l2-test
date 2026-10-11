@@ -16,9 +16,11 @@ assert all(r["trace_tag"] is True for r in events[:2])
 assert all(r["dbid"] == 9 and r["txn_id"] == 7 and r["address"] == 4096 for r in events[:2])
 assert all(r["data"] == bytes(i ^ 0xa5 for i in range(32)).hex() for r in events[:2])
 assert all(r["state_before"] == 0 and r["state_after"] == 2 and r["dirty"] is False for r in events[:2])
+assert all(r["allow_retry"] is False and r["exp_comp_ack"] is True and r["p_crd_type"] == 3 for r in events[:2])
+assert all(r["size"] == 6 and r["mem_attr"] == 13 and r["order"] == 0 and r["ns"] is False and r["likely_shared"] is True for r in events[:2])
 assert len({r["direction"] for r in events[2:]}) == 13
 for row in events[2:]:
-    assert all(row[key] is None for key in ("sim_time", "address", "dbid", "data", "state_before", "state_after"))
+    assert all(row[key] is None for key in ("sim_time", "address", "dbid", "data", "state_before", "state_after", "allow_retry", "exp_comp_ack", "p_crd_type", "size", "mem_attr", "order", "ns", "likely_shared"))
     assert row["handshake"] is True
 text = Path(str(prefix) + ".log").read_text()
 assert "cycle=42" in text and "sim_time=85" in text and "TraceTag=1" in text
