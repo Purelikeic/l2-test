@@ -1,5 +1,19 @@
 # Compact CHI testing
 
+## Current independent forward endpoint boundary
+
+Lower-Snoop DCT traffic is now owned by ForwardNodeBoard, an independent host
+endpoint. It collects both DCT data beats by forward-node transaction identity,
+checks HomeNID/DBID/TraceTag/routing and emits the CompAck one real cycle after
+both beats. The DUT response is still checked by LowerSnoopBoard; the delayed
+ack obligation no longer lives as a single tester pair of `{cycle, data}`.
+ForwardNodeBoard has its own host fixture for duplicate beats, bad routes,
+identity changes, premature ack and delayed completion. Native lower-snoop and
+all other finite traces use this endpoint and retain the existing external
+forward-node limitation: it is a bounded independent test endpoint, not a full
+network topology model.
+
+
 ## Current DataStorage terminal version boundary
 
 SRAM/DataStorage expose a current indexed storage read through Slice/top using

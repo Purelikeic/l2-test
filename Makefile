@@ -411,6 +411,13 @@ compactchi-datastorage-test:
 	$(COMPACTCHI_CHECK_DIR)/datastorage-monitor-test $(COMPACTCHI_CHECK_DIR)/datastorage.jsonl
 	python3 $(CURDIR)/main/CompactCHI/DataStorageCheckerTest.py
 
+.PHONY: compactchi-forward-node-test
+compactchi-forward-node-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/ForwardNodeBoardTest.cpp \
+		-o $(COMPACTCHI_CHECK_DIR)/forward-node-test
+	$(COMPACTCHI_CHECK_DIR)/forward-node-test
+
 .PHONY: compactchi-resource-test
 compactchi-resource-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)

@@ -12,6 +12,7 @@
 #include "NodeAgent.hpp"
 #include "ResourceMonitor.hpp"
 #include "DirectoryMonitor.hpp"
+#include "ForwardNodeBoard.hpp"
 #include "DataStorageMonitor.hpp"
 #include <set>
 #include <iomanip>
@@ -41,6 +42,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     std::unique_ptr<compactchi::ResourceMonitor> resources;
     std::unique_ptr<compactchi::DirectoryMonitor> directory;
     std::unique_ptr<compactchi::DataStorageMonitor> dataStorage;
+    compactchi::ForwardNodeBoard forwardNode;
     bool directoryScan = false, directoryChecked = false, dataStorageScan = false;
     compactchi::ResourceSnapshot resourceSnapshot() const {
         return {{dut.io_resources_mshrs, dut.io_resources_responses, dut.io_resources_writebacks,
@@ -54,7 +56,6 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     std::vector<PlannedTestAction> replay;
     NodeFuzzer* actionScheduler = nullptr;
     std::set<uint64_t> initializedLines;
-    std::optional<std::pair<uint64_t, compactchi::EbData>> forwardAck;
     std::ofstream stimulus, actions, rejections;
     unsigned quiet = 0, downRequests = 0;
     bool successful = false;
@@ -148,16 +149,13 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
         board->initialize(address, bytes);
     }
     bool terminalReady() const {
-        return actionScheduler && actionScheduler->done() && ready() && lowerBoard->idle() && !forwardAck &&
-            (!victimProfile || victim.complete()) && resourceSnapshot().empty() &&
+        return actionScheduler && actionScheduler->done() && ready() && lowerBoard->idle() &&
+            (!victimProfile || victim.complete()) && forwardNode.idle() && resourceSnapshot().empty() &&
             !dut.io_downReq_valid && !dut.io_upSnp_valid;
     }
     void maintain() {
-        if (forwardAck && cycle() >= forwardAck->first) {
-            const auto& data = forwardAck->second;
-            lowerBoard->forwardCompAck(data.target, 8, data.dbid, data.traceTag);
-            forwardAck.reset();
-        }
+        if (auto ack = forwardNode.tick(cycle()))
+            lowerBoard->forwardCompAck(ack->source, ack->target, ack->txn, ack->traceTag);
         const bool drained = terminalReady();
         if (drained) ++quiet;
         else quiet = 0;
@@ -426,7 +424,7 @@ public:
             else if (data.opcode == 2) home->receiveCopyback(data);
             else if (data.target == 12) {
                 lowerBoard->forwardData(data);
-                if (data.dataId == 2) forwardAck = std::make_pair(cycle() + 1, data);
+                forwardNode.accept(data, cycle());
             } else lowerBoard->homeData(data);
         }
         memory->handleChannels();
