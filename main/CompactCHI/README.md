@@ -61,11 +61,14 @@ and all combinations remain open. No observed victim way or DUT data supplies an
 expected value. The new `compactchi-transition-test` foundation target generates
 only bounded transport/state histories; it is not a DUT equivalence test.
 
-An existing RTL gap remains outside this checker-only round: the local upstream
-EVT Evict path completes without the client-clearing Meta write specified in
-MainPipe.md and CoupledL2. Current retained native Evict sequences have later
-Snoops; terminal-at-Evict client removal is excluded and requires a separate RTL
-repair decision. This round does not repair control or protocol behavior.
+Round 2 identified a local upstream EVT Evict path that completed without the
+client-clearing Meta write specified in MainPipe.md and CoupledL2. The scoped RTL
+repair now writes that hit entry in s3, clearing Client/clientState while retaining
+resident state, tag and stored bytes. EvictSpec checks ReadShared -> Evict ->
+terminal Directory/DataStorage without a later request/Snoop, including stalled
+Comp. MainPipeSpec checks metadata preservation and miss/channel/replay guards.
+This closes the local serialized path; arbitrary Evict/MSHR overlap remains
+outside the supported endpoint scope and no nested ownership interface is added.
 
 ## Current DataStorage terminal version boundary
 
