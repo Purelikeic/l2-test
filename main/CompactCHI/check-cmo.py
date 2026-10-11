@@ -73,7 +73,7 @@ def check(root, events, profile, actions=None):
         assert len(home_done) == 1 and not downstream, "CompCMO lacks its completed downstream Home CMO"
         down_req, home_rsp = home_done[0]
         assert rsp["cycle"] >= home_rsp["cycle"]
-        evidence.append(dict(kind=action["kind"], node=action["node"], txn=action["txn"],
+        evidence.append(dict(kind=action["kind"], node=action["node"], txn=action["txn"], address=action["address"],
                              requestCycle=req["cycle"], downstreamOpcode=down_req["opcode"],
                              downstreamTxn=down_req["txn_id"], homeCompCycle=home_rsp["cycle"],
                              compCMOCycle=rsp["cycle"], nestedSnoops=len(nested)))

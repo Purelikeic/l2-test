@@ -145,6 +145,10 @@ directory_evidence["mutationRejections"] = directory_tools["mutations"](director
 data_tools = runpy.run_path(str(Path(__file__).with_name("check-datastorage.py")))
 data_evidence = data_tools["check"](directory_rows, data_rows, resource_rows, architectural_evidence["l2DataVersions"], architectural_evidence["l2UndefinedStorage"], architectural_evidence["l2Transitions"])
 data_evidence["mutationRejections"] = data_tools["mutations"](directory_rows, data_rows, resource_rows, architectural_evidence["l2DataVersions"], architectural_evidence["l2UndefinedStorage"], architectural_evidence["l2Transitions"])
+transition_map = {row["address"]: row["transitions"] for row in architectural_evidence["l2Transitions"]}
+for cmo in cmo_evidence["evidence"]:
+    required = {5: "cmo-cleanshared-preserve", 6: "cmo-cleaninvalid-discard", 7: "cmo-makeinvalid-discard"}[cmo["kind"]]
+    assert required in transition_map.get(cmo["address"], []), (cmo, required, "CMO evidence and DataStorage transition ledger disagree")
 assert not any(r["cycle"] >= directory_rows[1]["cycle"] for r in events), "Directory/DataStorage scan overlaps live channel traffic"
 directory_by_time = {row["sim_time"]: row for row in directory_rows[1:]}
 data_by_time = {row["sim_time"]: row for row in data_rows[1:]}
