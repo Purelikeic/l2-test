@@ -30,6 +30,11 @@ node_evidence = node_check["check"](root, events, seed, action_mode=profile == "
 transport_tools = runpy.run_path(str(Path(__file__).with_name("check-transport.py")))
 transport_evidence = transport_tools["check"](events)
 transport_evidence["mutationRejections"] = transport_tools["mutations"](events)
+prefetch_tools = runpy.run_path(str(Path(__file__).with_name("check-prefetch.py")))
+prefetch_rows = [json.loads(line) for line in (root / "prefetch.jsonl").read_text().splitlines()]
+prefetch_evidence = prefetch_tools["check"](prefetch_rows, events)
+prefetch_evidence["mutationRejections"] = prefetch_tools["mutations"](prefetch_rows, events)
+prefetch_by_time = {r["sim_time"]:r for r in prefetch_rows}
 if profile in ("node-actions", "configured"):
     expected_requests = sum(r["direction"] == "cchi_rx_req" and r["handshake"] for r in events)
     latency = {}
@@ -216,6 +221,19 @@ def check_time():
             assert error in symbols and values.get(symbols[error]) == int(line["error"]), (time, error, "DataStorage error differs from VCD")
         assert values[symbols["clock"]] == 0
         data_checked += 1
+    if time in prefetch_by_time:
+        row = prefetch_by_time.pop(time)
+        assert values[symbols["io_prefetchTrainingDropped"]] == row["trainingDropped"]
+        assert values[symbols["io_prefetchDelayedTrainingDropped"]] == row["delayedTrainingDropped"]
+        for name, prefix, fields in (
+            ("train", "io_prefetchTraining", {"address":"address","source":"source","needT":"needT","hit":"hit","prefetched":"prefetched","traceTag":"traceTag"}),
+            ("issue", "io_prefetchIssued", {"address":"address","source":"source","unique":"unique","traceTag":"traceTag"}),
+            ("drop", "io_prefetchDropped", {"address":"address","source":"source","unique":"unique","traceTag":"traceTag"}),
+            ("complete", "io_prefetchCompleted", {"address":"address","source":"prefetchSource","denied":"denied","traceTag":"traceTag"})):
+            assert values[symbols[prefix+"_valid"]] == int(row[name] is not None)
+            if row[name] is not None:
+                for key,suffix in fields.items():
+                    assert values[symbols[prefix+"_bits_"+suffix]] == row[name][key], "prefetch evidence differs from VCD"
     if time in resource_by_time:
         row = resource_by_time.pop(time)
         for field in (*resource_fields, "ready"):
@@ -283,6 +301,7 @@ with (root / "waveform.vcd").open() as waveform:
     check_time()
 assert not by_time and checked == len(events)
 assert not resource_by_time and resource_checked == len(resource_rows)
+assert not prefetch_by_time and len(prefetch_rows) == len(resource_rows)
 assert not directory_by_time and directory_checked == len(directory_rows) - 1
 assert not data_by_time and data_checked == len(data_rows) - 1
 directory_evidence["waveformAlignedSlots"] = directory_checked * directory_geometry["slices"]
@@ -297,7 +316,7 @@ evidence = {"profile": profile, "seed": seed,
             "dataStorageEvidence": data_evidence, "forwardEvidence": forward_evidence,
             "cmoEvidence": cmo_evidence, "cmoForwardEvidence": cmo_forward_evidence,
             "transitionEvidence": transition_evidence, "transportEvidence": transport_evidence,
-            "residencyEvidence": residency_evidence}
+            "residencyEvidence": residency_evidence, "prefetchEvidence": prefetch_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

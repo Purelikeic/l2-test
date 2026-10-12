@@ -56,7 +56,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     std::vector<PlannedTestAction> replay;
     NodeFuzzer* actionScheduler = nullptr;
     std::set<uint64_t> initializedLines;
-    std::ofstream stimulus, actions, rejections;
+    std::ofstream stimulus, actions, rejections, prefetchEvidence;
     unsigned quiet = 0, downRequests = 0;
     bool successful = false;
     std::filesystem::path output;
@@ -276,6 +276,8 @@ public:
         cfg = &config; this->cycles = &cycles; random.seed(config.seed);
         stimulus.open(output / "stimulus.txt"); actions.open(output / "actions.jsonl"); rejections.open(output / "rejections.jsonl");
         if (!stimulus || !actions || !rejections) throw std::runtime_error("cannot open action evidence");
+        prefetchEvidence.open(output / "prefetch.jsonl");
+        if (!prefetchEvidence) throw std::runtime_error("cannot open prefetch evidence");
         const auto layout = TestNodeLayout(config);
         board = std::make_unique<compactchi::ArchitecturalBoard>(*this, layout.size(), global, uncached);
         requester = std::make_unique<compactchi::Requester>(*board, 1);
@@ -308,6 +310,35 @@ public:
     }
     void handleChannels() override {
         resources->sample(cycle(), simulation.time() - 1, resourceSnapshot());
+        prefetchEvidence << "{\"cycle\":" << cycle() << ",\"sim_time\":" << simulation.time() - 1
+            << ",\"trainingDropped\":" << unsigned(dut.io_prefetchTrainingDropped)
+            << ",\"delayedTrainingDropped\":" << unsigned(dut.io_prefetchDelayedTrainingDropped) << ",\"train\":";
+        if (dut.io_prefetchTraining_valid) {
+            prefetchEvidence << "{\"address\":" << dut.io_prefetchTraining_bits_address
+                << ",\"source\":" << unsigned(dut.io_prefetchTraining_bits_source)
+                << ",\"needT\":" << unsigned(dut.io_prefetchTraining_bits_needT)
+                << ",\"hit\":" << unsigned(dut.io_prefetchTraining_bits_hit)
+                << ",\"prefetched\":" << unsigned(dut.io_prefetchTraining_bits_prefetched)
+                << ",\"traceTag\":" << unsigned(dut.io_prefetchTraining_bits_traceTag) << '}';
+        } else prefetchEvidence << "null";
+        auto recordPrefetch = [&](const char* name, bool valid, uint64_t address, unsigned source, bool unique, bool tag) {
+            prefetchEvidence << ",\"" << name << "\":";
+            if (valid) prefetchEvidence << "{\"address\":" << address << ",\"source\":" << source
+                << ",\"unique\":" << unsigned(unique) << ",\"traceTag\":" << unsigned(tag) << '}';
+            else prefetchEvidence << "null";
+        };
+        recordPrefetch("issue", dut.io_prefetchIssued_valid, dut.io_prefetchIssued_bits_address,
+            dut.io_prefetchIssued_bits_source, dut.io_prefetchIssued_bits_unique, dut.io_prefetchIssued_bits_traceTag);
+        recordPrefetch("drop", dut.io_prefetchDropped_valid, dut.io_prefetchDropped_bits_address,
+            dut.io_prefetchDropped_bits_source, dut.io_prefetchDropped_bits_unique, dut.io_prefetchDropped_bits_traceTag);
+        prefetchEvidence << ",\"complete\":";
+        if (dut.io_prefetchCompleted_valid) prefetchEvidence << "{\"address\":" << dut.io_prefetchCompleted_bits_address
+            << ",\"source\":" << unsigned(dut.io_prefetchCompleted_bits_prefetchSource)
+            << ",\"denied\":" << unsigned(dut.io_prefetchCompleted_bits_denied)
+            << ",\"traceTag\":" << unsigned(dut.io_prefetchCompleted_bits_traceTag) << '}';
+        else prefetchEvidence << "null";
+        prefetchEvidence << "}\n";
+        prefetchEvidence.flush();
         if (directoryScan) {
             using E = compactchi::DirectoryEntry;
             directory->sample(cycle(), simulation.time() - 1, terminalReady(), dut.io_directorySet, dut.io_directoryWay,
