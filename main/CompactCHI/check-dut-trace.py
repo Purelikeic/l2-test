@@ -154,6 +154,10 @@ transition_tools = runpy.run_path(str(Path(__file__).with_name("check-transition
 actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
 transition_evidence = transition_tools["check"](events, actions, architectural_evidence, directory_rows)
 transition_evidence["mutations"] = transition_tools["mutations"](events, actions, architectural_evidence, directory_rows)
+residency_tools = runpy.run_path(str(Path(__file__).with_name("check-residency.py")))
+residency_model = residency_tools["derive"](events, actions, architectural_evidence, residency_tools["DEFAULT_GEOMETRY"], profile, topo["memoryStart"])
+residency_evidence = residency_tools["check"](directory_rows, data_rows, residency_model)
+residency_evidence["mutationRejections"] = residency_tools["mutations"](directory_rows, data_rows, residency_model)
 transition_map = {row["address"]: row["transitions"] for row in architectural_evidence["l2Transitions"]}
 for cmo in cmo_evidence["evidence"]:
     required = {5: "cmo-cleanshared-preserve", 6: "cmo-cleaninvalid-discard", 7: "cmo-makeinvalid-discard"}[cmo["kind"]]
@@ -292,7 +296,8 @@ evidence = {"profile": profile, "seed": seed,
             "architecturalEvidence": architectural_evidence, "directoryEvidence": directory_evidence,
             "dataStorageEvidence": data_evidence, "forwardEvidence": forward_evidence,
             "cmoEvidence": cmo_evidence, "cmoForwardEvidence": cmo_forward_evidence,
-            "transitionEvidence": transition_evidence, "transportEvidence": transport_evidence}
+            "transitionEvidence": transition_evidence, "transportEvidence": transport_evidence,
+            "residencyEvidence": residency_evidence}
 if victim_evidence is not None:
     evidence["victimEvidence"] = victim_evidence
 if latency:

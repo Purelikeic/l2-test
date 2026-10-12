@@ -26,9 +26,13 @@ private:
     std::vector<Observation> log;
 public:
     void accept(const EbData& data, uint64_t cycle) {
-        if (data.target != 12 || data.opcode != 4 || data.home != 8 || data.dataId > 2 || data.respErr != 0)
+        if (data.source != 1 || data.target != 12 || data.opcode != 4 || data.home != 8 ||
+            (data.dataId != 0 && data.dataId != 2) || data.respErr != 0)
             throw std::runtime_error("forward endpoint received an invalid DCT data flit");
         const auto key = std::make_pair(data.target, data.txn);
+        for (const auto& [otherKey, entry] : active)
+            if (otherKey != key && entry.dbid == data.dbid)
+                throw std::runtime_error("forward endpoint reused a live Home DBID");
         auto [it, inserted] = active.emplace(key, Entry{data.target, data.home, data.dbid, data.txn, data.traceTag});
         auto& entry = it->second;
         if (!inserted && (entry.dbid != data.dbid || entry.traceTag != data.traceTag))

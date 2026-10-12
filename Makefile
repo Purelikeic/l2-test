@@ -443,6 +443,20 @@ compactchi-transport-test:
 	$(COMPACTCHI_CHECK_DIR)/transport-matrix-test $(COMPACTCHI_CHECK_DIR)/transport
 	python3 $(CURDIR)/main/CompactCHI/TransportCheckerTest.py $(COMPACTCHI_CHECK_DIR)/transport
 
+.PHONY: compactchi-residency-test
+compactchi-residency-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)/residency
+	python3 $(CURDIR)/main/CompactCHI/ResidencyCheckerTest.py $(COMPACTCHI_CHECK_DIR)/residency
+
+.PHONY: compactchi-forward-multi-test
+compactchi-forward-multi-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)/forward-multi
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/ForwardMultiTest.cpp \
+		$(CURDIR)/main/CompactCHI/CanonicalTrace.cpp $(CURDIR)/main/CompactCHI/LowerSnoopBoard.cpp \
+		$(CURDIR)/main/Base/TLGlobal.cpp -o $(COMPACTCHI_CHECK_DIR)/forward-multi-test
+	$(COMPACTCHI_CHECK_DIR)/forward-multi-test $(COMPACTCHI_CHECK_DIR)/forward-multi
+	python3 $(CURDIR)/main/CompactCHI/ForwardMultiCheckerTest.py $(COMPACTCHI_CHECK_DIR)/forward-multi
+
 .PHONY: compactchi-resource-test
 compactchi-resource-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)
