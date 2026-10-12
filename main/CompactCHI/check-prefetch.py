@@ -69,7 +69,7 @@ class Teacher:
         self.cycle += 1
 
 
-def check(samples, events):
+def check(samples, events, require_unique_read_once_coverage=False):
     assert samples and samples[0]["cycle"] == 8
     teacher, candidates, pending = Teacher(), deque(), Counter()
     requests = [r for r in events if r["handshake"] and r["direction"] == "cchi_rx_req" and r["opcode"] in (3,4,16)]
@@ -77,6 +77,7 @@ def check(samples, events):
     trained = issued = completed = dropped = cross_page = 0
     for index,row in enumerate(samples):
         assert row["cycle"] == samples[0]["cycle"]+index and row["sim_time"] == row["cycle"]*2
+        assert not (row["issue"] is not None and row["drop"] is not None), "one prefetch cannot be issued and dropped in the same cycle"
         for name in ("issue","drop"):
             record = row[name]
             if record is None: continue
@@ -114,23 +115,37 @@ def check(samples, events):
         assert row["delayedTrainingDropped"] == (address is not None and len(teacher.delayed) == 16), "delay training drop differs from independent queue model"
         teacher.step(address)
     assert not candidates and not any(pending.values()), "terminal prefetch predictions/feedback remain live"
+    coverage = "observed-training-only; eligibility completeness is not claimed"
+    if require_unique_read_once_coverage:
+        fired = [r for r in events if r["handshake"]]
+        assert all(r["opcode"] == 3 for r in fired if r["direction"] == "cchi_rx_req"), "coverage proof requires ReadOnce-only stimulus"
+        assert len({r["address"] for r in requests}) == len(requests), "coverage proof requires unique first-access addresses"
+        assert not any(r["direction"] in ("cchi_rx_evt", "chi_rx_snp") for r in fired), "maintenance/Snoop overlap is outside the coverage proof"
+        assert all(r.get("resp_err") in (None, 0) for r in fired), "error training eligibility is outside the coverage proof"
+        assert not any(r["trainingDropped"] for r in samples), "cannot claim exact coverage when s3 snapshots were dropped"
+        # Empty reset, unique first-demand addresses and PBOP-only allocation:
+        # every demand is a miss or first use of a prefetched line. This
+        # expectation comes from stimulus, not the DUT's hit/prefetched flags.
+        assert used == set(range(len(requests))), "an independently eligible ReadOnce demand was not trained"
+        coverage = "exact coverage of unique first-access ReadOnce with no s3 drops or maintenance/errors; other qualifications remain unproved"
     return dict(trainingSamples=trained,issued=issued,completed=completed,dropped=dropped,
                 pageCrossingsSuppressed=cross_page,learningPhases=teacher.phases,
                 delayedTrainingDropped=teacher.dropped,s3TrainingDropped=sum(r["trainingDropped"].bit_count() for r in samples),
-                scope="physical CPL2 PBOP short-table/badScore1 prediction, source/needT/TraceTag and accepted terminal feedback; bytes checked by independent storage replay")
+                trainingCoverage=coverage,
+                scope="PBOP learning/output replay from observed accepted training, matched to demand intent; optional bounded stimulus-derived coverage; bytes checked by independent storage replay")
 
 
-def mutations(samples, events):
+def mutations(samples, events, require_unique_read_once_coverage=False):
     variants=[]
     for name in ("train","issue","drop","complete"):
         index=next((i for i,r in enumerate(samples) if r[name] is not None),None)
         if index is None: continue
         for field,value in (("address",samples[index][name]["address"]+64),("source",15),("traceTag",1-samples[index][name]["traceTag"])):
             changed=copy.deepcopy(samples); changed[index][name][field]=value; variants.append(changed)
-        if name in ("issue","complete"):
+        if name in ("issue","complete") or (name == "train" and require_unique_read_once_coverage):
             changed=copy.deepcopy(samples); changed[index][name]=None; variants.append(changed)
     for changed in variants:
-        try: check(changed,events)
+        try: check(changed,events,require_unique_read_once_coverage)
         except (AssertionError,KeyError,ValueError): pass
         else: raise AssertionError("prefetch checker accepted an intent/address/source/feedback mutation")
     return len(variants)

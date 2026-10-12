@@ -32,8 +32,9 @@ transport_evidence = transport_tools["check"](events)
 transport_evidence["mutationRejections"] = transport_tools["mutations"](events)
 prefetch_tools = runpy.run_path(str(Path(__file__).with_name("check-prefetch.py")))
 prefetch_rows = [json.loads(line) for line in (root / "prefetch.jsonl").read_text().splitlines()]
-prefetch_evidence = prefetch_tools["check"](prefetch_rows, events)
-prefetch_evidence["mutationRejections"] = prefetch_tools["mutations"](prefetch_rows, events)
+prefetch_coverage = "--prefetch-training-coverage" in sys.argv[3:]
+prefetch_evidence = prefetch_tools["check"](prefetch_rows, events, prefetch_coverage)
+prefetch_evidence["mutationRejections"] = prefetch_tools["mutations"](prefetch_rows, events, prefetch_coverage)
 prefetch_by_time = {r["sim_time"]:r for r in prefetch_rows}
 if profile in ("node-actions", "configured"):
     expected_requests = sum(r["direction"] == "cchi_rx_req" and r["handshake"] for r in events)

@@ -14,8 +14,20 @@ explicitly deferred. Exclusive, Atomic and WriteUnique remain Illegal.
 feedback and training drops on real cycles. `check-prefetch.py` independently
 replays the delay/RR/score teacher from accepted demand intent, checks same-page
 predicted addresses, source, needT and TraceTag, and joins accepted Stash feedback.
-Every observation is compared with top-level VCD. DUT offsets, scores, RR contents,
-returned bytes or replacement choices never generate expected predictions.
+Every observation is compared with top-level VCD. Issued observations come from
+actual Slice acceptance; issue and drop are mutually exclusive. DUT offsets,
+scores, RR contents, returned bytes or replacement choices never generate
+expected predictions.
+
+The normal checker uses observed accepted training as the teacher-model input and
+matches each sample to independent demand intent. This proves learning/output and
+feedback behavior; it does not prove all eligible demands were trained. The
+optional `--prefetch-training-coverage` check adds an independent coverage proof
+only for reset-empty, unique first-access ReadOnce traffic with PBOP-only
+allocation, no maintenance/errors and no s3 snapshot drops. Other qualification
+completeness remains open. A merged demand snapshot is generated at its first s3
+arrival even when refill retry cancels installation, so retry cannot swallow the
+one-shot dispatch token.
 
 The existing independent architectural replay checks Requester/Home memory and
 installed L2 versions. Directory/DataStorage scans require drained resources and

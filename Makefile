@@ -457,6 +457,10 @@ compactchi-forward-multi-test:
 	$(COMPACTCHI_CHECK_DIR)/forward-multi-test $(COMPACTCHI_CHECK_DIR)/forward-multi
 	python3 $(CURDIR)/main/CompactCHI/ForwardMultiCheckerTest.py $(COMPACTCHI_CHECK_DIR)/forward-multi
 
+.PHONY: compactchi-prefetch-checker-test
+compactchi-prefetch-checker-test:
+	python3 $(CURDIR)/main/CompactCHI/PrefetchCheckerTest.py
+
 .PHONY: compactchi-resource-test
 compactchi-resource-test:
 	@mkdir -p $(COMPACTCHI_CHECK_DIR)
