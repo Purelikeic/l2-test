@@ -5,7 +5,7 @@
 #include <functional>
 #include <optional>
 
-enum class TestScenario { Configured, DeterministicRead, RandomRead, LowerSnoop, Victim, Actions, Replay };
+enum class TestScenario { Configured, DeterministicRead, RandomRead, LowerSnoop, Victim, Actions, Replay, RandomActions };
 struct PlannedTestAction { unsigned node; TestAction action; };
 class TestScenarioHooks {
 public:
@@ -27,6 +27,9 @@ class NodeFuzzer : public Fuzzer {
     std::mt19937 random;
     std::vector<PlannedTestAction> replay;
     unsigned issued = 0, phase = 0;
+    unsigned randomEpisode = 0, randomStep = 0;
+    std::vector<PlannedTestAction> randomSegment;
+    void buildRandomSegment();
     uint64_t anvilU = 0, anvilR = 0, anvilB = 0, anvilEpoch = 0;
     std::vector<unsigned> anvilOrder;
     void unified();

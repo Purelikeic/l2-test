@@ -15,6 +15,7 @@ NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& n
         case TLSequenceMode::LOWER_SNOOP: selected = TestScenario::LowerSnoop; break;
         case TLSequenceMode::VICTIM: selected = TestScenario::Victim; break;
         case TLSequenceMode::NODE_ACTIONS: selected = TestScenario::Actions; break;
+        case TLSequenceMode::RANDOM_ACTIONS: selected = TestScenario::RandomActions; break;
         default: break;
         }
         if (selected) {
@@ -49,6 +50,17 @@ NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& n
         throw std::invalid_argument("random-read mode needs two configured coherent and transient nodes");
     if (scenario == TestScenario::Actions && mmio.empty())
         throw std::invalid_argument("action mode needs a configured MMIO node");
+    if (scenario == TestScenario::RandomActions) {
+        const auto span = cfg.randomActionLines * 64;
+        if (mmio.empty() || !cfg.randomActionEpisodes || cfg.randomActionEpisodes > 40 ||
+            !cfg.randomActionLines || cfg.randomActionLines > 8 ||
+            !cfg.memoryEnable || (cfg.memoryStart & 63) || cfg.memoryEnd < cfg.memoryStart ||
+            span > cfg.memoryEnd - cfg.memoryStart || !cfg.mmioEnable || (cfg.mmioStart & 63) ||
+            cfg.mmioEnd < cfg.mmioStart || span > cfg.mmioEnd - cfg.mmioStart ||
+            !cfg.cmoEnable || !cfg.cmoEnableCBOClean || !cfg.cmoEnableCBOFlush || !cfg.cmoEnableCBOInval ||
+            cfg.cmoStart > cfg.memoryStart || cfg.cmoEnd < cfg.memoryStart + span)
+            throw std::invalid_argument("random-actions requires bounded episodes/lines and enabled aligned memory/CMO/MMIO regions");
+    }
     if (scenario == TestScenario::Replay && this->replay.empty())
         throw std::invalid_argument("empty action replay");
 }
@@ -97,6 +109,47 @@ PlannedTestAction NodeFuzzer::next() {
         if (issued == 2 || issued == 4) { planned.node = coherent.front(); action.kind = TestActionKind::AcquireUnique; }
     }
     return planned;
+}
+void NodeFuzzer::buildRandomSegment() {
+    const auto address = cfg.memoryStart + uint64_t(random() % cfg.randomActionLines) * 64;
+    const auto owner = coherent[random() % coherent.size()];
+    auto add = [&](unsigned node, TestActionKind kind, uint64_t target) {
+        TestAction action{kind, target, 20 + issued + unsigned(randomSegment.size()),
+                          (issued + randomSegment.size()) % 2 == 0};
+        for (unsigned i = 0; i < 64; ++i) action.data[i] = uint8_t(random());
+        randomSegment.push_back({node, action});
+    };
+    // Each coherent segment releases its client before another owner is chosen.
+    // Decisions use seed and accepted intent only, never DUT residency or bytes.
+    switch (random() % 6) {
+    case 0:
+        add(transient[random() % transient.size()], TestActionKind::ReadOnce, address);
+        break;
+    case 1:
+        add(owner, TestActionKind::AcquireShared, address);
+        add(owner, TestActionKind::Clean, address);
+        add(owner, TestActionKind::Evict, address);
+        break;
+    case 2: case 3: case 4: {
+        add(owner, TestActionKind::AcquireUnique, address);
+        add(owner, TestActionKind::Store, address);
+        const auto release = random() % 4;
+        add(owner, release == 0 ? TestActionKind::WriteBack : release == 1 ? TestActionKind::Clean :
+            release == 2 ? TestActionKind::Flush : TestActionKind::Invalidate, address);
+        if (release == 1) add(owner, TestActionKind::Evict, address);
+        break;
+    }
+    default: {
+        const auto node = mmio[random() % mmio.size()];
+        const auto device = cfg.mmioStart + uint64_t(random() % cfg.randomActionLines) * 64;
+        add(node, TestActionKind::WriteNoSnp, device);
+        randomSegment.back().action.size = 3;
+        randomSegment.back().action.byteEnable = 1 + random() % 255;
+        add(node, TestActionKind::ReadNoSnp, device);
+        randomSegment.back().action.size = 3;
+        break;
+    }
+    }
 }
 void NodeFuzzer::unified() {
     if (cfg.unifiedSequenceMode == TLUnifiedSequenceMode::PASSIVE || !cfg.memoryEnable || !hooks.ready()) return;
@@ -178,6 +231,7 @@ void NodeFuzzer::configured() {
     }
 }
 bool NodeFuzzer::done() const {
+    if (scenario == TestScenario::RandomActions) return randomEpisode == cfg.randomActionEpisodes;
     if (scenario == TestScenario::Configured) {
         if (cfg.unifiedSequenceEnable) return cfg.unifiedSequenceMode == TLUnifiedSequenceMode::PASSIVE || anvilEpoch >= cfg.unifiedSequenceModeAnvil.epoch;
         for (const auto* node : nodes) {
@@ -198,6 +252,16 @@ void NodeFuzzer::tick() {
     if (startupInterval < cfg.startupCycle) { ++startupInterval; return; }
     if (scenario == TestScenario::Configured) { if (!done()) configured(); return; }
     if (done() || !hooks.ready()) return;
+    if (scenario == TestScenario::RandomActions) {
+        if (randomSegment.empty()) buildRandomSegment();
+        if (submit(randomSegment.at(randomStep)) == TestActionResult::Accepted) {
+            ++issued;
+            if (++randomStep == randomSegment.size()) {
+                ++randomEpisode; randomStep = 0; randomSegment.clear();
+            }
+        }
+        return;
+    }
     if (scenario == TestScenario::Victim && issued == 1 && !stored ||
         scenario == TestScenario::LowerSnoop && issued == 5 && !stored) {
         const auto address = cfg.memoryStart + (scenario == TestScenario::LowerSnoop ? 64 : 0);

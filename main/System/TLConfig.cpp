@@ -45,6 +45,8 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
 
     tlcfg.fuzzARIInterval               = CFUZZER_RANGE_ITERATE_INTERVAL;
     tlcfg.fuzzARITarget                 = CFUZZER_RANGE_ITERATE_TARGET;
+    tlcfg.randomActionEpisodes          = 32;
+    tlcfg.randomActionLines             = 4;
 
     tlcfg.fuzzStreamInterval            = CFUZZER_FUZZ_STREAM_INTERVAL;
     tlcfg.fuzzStreamStep                = CFUZZER_FUZZ_STREAM_STEP;
@@ -135,6 +137,8 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
     INI_OVERRIDE_INT("tltest.fuzzer", "seed",                       tlcfg.seed);
     INI_OVERRIDE_INT("tltest.fuzzer", "ari.interval",               tlcfg.fuzzARIInterval);
     INI_OVERRIDE_INT("tltest.fuzzer", "ari.target",                 tlcfg.fuzzARITarget);
+    INI_OVERRIDE_INT("tltest.fuzzer", "random.episodes",            tlcfg.randomActionEpisodes);
+    INI_OVERRIDE_INT("tltest.fuzzer", "random.lines",               tlcfg.randomActionLines);
     INI_OVERRIDE_INT("tltest.fuzzer", "stream.interval",            tlcfg.fuzzStreamInterval);
     INI_OVERRIDE_INT("tltest.fuzzer", "stream.step",                tlcfg.fuzzStreamStep);
     INI_OVERRIDE_INT("tltest.fuzzer", "stream.start",               tlcfg.fuzzStreamStart);
@@ -190,6 +194,7 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
                 else if (mode == "lower_snoop") tlcfg.sequenceModes[i] = TLSequenceMode::LOWER_SNOOP;
                 else if (mode == "victim") tlcfg.sequenceModes[i] = TLSequenceMode::VICTIM;
                 else if (mode == "node_actions") tlcfg.sequenceModes[i] = TLSequenceMode::NODE_ACTIONS;
+                else if (mode == "random_actions") tlcfg.sequenceModes[i] = TLSequenceMode::RANDOM_ACTIONS;
                 else
                 {
                     LogInfo("INI", 

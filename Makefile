@@ -457,6 +457,10 @@ compactchi-forward-multi-test:
 	$(COMPACTCHI_CHECK_DIR)/forward-multi-test $(COMPACTCHI_CHECK_DIR)/forward-multi
 	python3 $(CURDIR)/main/CompactCHI/ForwardMultiCheckerTest.py $(COMPACTCHI_CHECK_DIR)/forward-multi
 
+.PHONY: compactchi-random-actions-checker-test
+compactchi-random-actions-checker-test:
+	python3 $(CURDIR)/main/CompactCHI/RandomActionsCheckerTest.py
+
 .PHONY: compactchi-prefetch-checker-test
 compactchi-prefetch-checker-test:
 	python3 $(CURDIR)/main/CompactCHI/PrefetchCheckerTest.py

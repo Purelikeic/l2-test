@@ -35,4 +35,17 @@ except AssertionError as error:
     assert "issued and dropped" in str(error)
     rejected += 1
 else: raise AssertionError("issue/drop observation was not exclusive")
-print("Prefetch checker boundary: explicit observed-training limitation, bounded first-access coverage and",rejected,"negative cases passed")
+reused = copy.deepcopy(samples)
+reused[12-8]["train"] = None
+reused[16-8]["train"]["address"] = 4096
+old_intents = copy.deepcopy(events)
+old_intents[0]["opcode"] = 16
+old_intents[1]["address"] = 4096
+old_intents[1]["opcode"] = 4
+assert tools["check"](reused,old_intents,serialized=True)["trainingSamples"] == 1
+wrong_permission = copy.deepcopy(reused)
+wrong_permission[16-8]["train"]["needT"] = True
+try: tools["check"](wrong_permission,old_intents,serialized=True)
+except AssertionError: rejected += 1
+else: raise AssertionError("serialized matching hid changed needT behind an older request")
+print("Prefetch checker boundary: observed-training limits, unique coverage, serialized reused-intent matching and",rejected,"negative cases passed")

@@ -118,7 +118,11 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
         }
         trace->record(event);
     }
-    bool ready() const override { return requester->idle() && board->idle() && home->idle(); }
+    bool ready() const override {
+        const bool drained = !actionScheduler || actionScheduler->getScenario() != TestScenario::RandomActions ||
+            resourceSnapshot().empty();
+        return requester->idle() && board->idle() && home->idle() && drained;
+    }
     void lowerShared(uint64_t address) override {
         const compactchi::LowerSnoop snoop{2048, 1, address, false, true};
         lowerBoard->issue(snoop, compactchi::Permission::UD);
@@ -585,6 +589,7 @@ int main(int argc, char** argv) {
         else if (profile == "lower-snoop") scenario = TestScenario::LowerSnoop;
         else if (profile == "victim") scenario = TestScenario::Victim;
         else if (profile == "node-actions") scenario = TestScenario::Actions;
+        else if (profile == "random-actions") scenario = TestScenario::RandomActions;
         else throw std::invalid_argument("unknown action fuzzer mode");
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);

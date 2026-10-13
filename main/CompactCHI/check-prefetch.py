@@ -69,7 +69,7 @@ class Teacher:
         self.cycle += 1
 
 
-def check(samples, events, require_unique_read_once_coverage=False):
+def check(samples, events, require_unique_read_once_coverage=False, serialized=False):
     assert samples and samples[0]["cycle"] == 8
     teacher, candidates, pending = Teacher(), deque(), Counter()
     requests = [r for r in events if r["handshake"] and r["direction"] == "cchi_rx_req" and r["opcode"] in (3,4,16)]
@@ -101,8 +101,19 @@ def check(samples, events, require_unique_read_once_coverage=False):
         if train is not None:
             assert not train["hit"] or train["prefetched"]
             address = train["address"]
-            owner = next((i for i,r in enumerate(requests) if i not in used and r["node"] == train["source"] and
-                          r["address"] == address and int(r["trace_tag"]) == train["traceTag"] and r["cycle"]+3 <= row["cycle"]),None)
+            if serialized:
+                # The random-actions profile independently proves zero resources
+                # at each action start. Bind to current accepted intent, without
+                # selecting an opcode using the DUT's needT/hit flags.
+                latest = max((r for r in events if r["handshake"] and
+                    r["direction"] in ("cchi_rx_req", "cchi_rx_evt") and
+                    r["cycle"]+3 <= row["cycle"]), key=lambda r:r["cycle"], default=None)
+                assert latest is not None and latest in requests, "serialized training lacks a current demand"
+                owner = requests.index(latest)
+                assert owner not in used and latest["node"] == train["source"] and latest["address"] == address and int(latest["trace_tag"]) == train["traceTag"], "serialized training changed its current demand identity"
+            else:
+                owner = next((i for i,r in enumerate(requests) if i not in used and r["node"] == train["source"] and
+                              r["address"] == address and int(r["trace_tag"]) == train["traceTag"] and r["cycle"]+3 <= row["cycle"]),None)
             assert owner is not None, "s3 training lacks an accepted demand intent"
             used.add(owner)
             assert train["needT"] == (requests[owner]["opcode"] == 16)
@@ -132,10 +143,11 @@ def check(samples, events, require_unique_read_once_coverage=False):
                 pageCrossingsSuppressed=cross_page,learningPhases=teacher.phases,
                 delayedTrainingDropped=teacher.dropped,s3TrainingDropped=sum(r["trainingDropped"].bit_count() for r in samples),
                 trainingCoverage=coverage,
+                intentMatching="latest accepted intent with independently checked serialized-action resource contract" if serialized else "unused matching accepted demand; general eligibility completeness remains open",
                 scope="PBOP learning/output replay from observed accepted training, matched to demand intent; optional bounded stimulus-derived coverage; bytes checked by independent storage replay")
 
 
-def mutations(samples, events, require_unique_read_once_coverage=False):
+def mutations(samples, events, require_unique_read_once_coverage=False, serialized=False):
     variants=[]
     for name in ("train","issue","drop","complete"):
         index=next((i for i,r in enumerate(samples) if r[name] is not None),None)
@@ -145,7 +157,7 @@ def mutations(samples, events, require_unique_read_once_coverage=False):
         if name in ("issue","complete") or (name == "train" and require_unique_read_once_coverage):
             changed=copy.deepcopy(samples); changed[index][name]=None; variants.append(changed)
     for changed in variants:
-        try: check(changed,events,require_unique_read_once_coverage)
+        try: check(changed,events,require_unique_read_once_coverage,serialized)
         except (AssertionError,KeyError,ValueError): pass
         else: raise AssertionError("prefetch checker accepted an intent/address/source/feedback mutation")
     return len(variants)

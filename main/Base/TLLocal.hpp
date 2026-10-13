@@ -21,7 +21,8 @@ enum class TLSequenceMode {
     RANDOM_READ,
     LOWER_SNOOP,
     VICTIM,
-    NODE_ACTIONS
+    NODE_ACTIONS,
+    RANDOM_ACTIONS
 };
 
 enum class TLUnifiedSequenceMode {
@@ -90,6 +91,8 @@ public:
 
     uint64_t            fuzzARIInterval;                        // Fuzz Auto Range Iteration interval
     uint64_t            fuzzARITarget;                          // Fuzz Auto Range Iteration target
+    uint64_t            randomActionEpisodes;                   // Bounded protocol-neutral random action segments
+    uint64_t            randomActionLines;                      // Working set for random action segments
 
     uint64_t            fuzzStreamInterval;                     // Fuzz Stream interval
     uint64_t            fuzzStreamStep;                         // Fuzz Stream step

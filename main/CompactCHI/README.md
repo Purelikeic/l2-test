@@ -52,6 +52,22 @@ remain required alongside prefetch evidence. A sustained transient ReadOnce stre
 is used to demonstrate actual PBOP learning, issuance and terminal completion.
 Host matrix inputs are reported separately from native DUT coverage.
 
+`make random-actions-test` adds bounded seeded mixed-action segments using
+`config/random-actions.ini`: 32 segments over four lines by default. It chooses
+node/address/data and legal acquire/store/release/CMO or MMIO write/read segments
+from the seed, retains the whole choice on Deferred, and releases each persistent
+client before choosing another segment owner. Random-actions alone waits for all
+DUT resources between actions; no DUT bytes/state generate expected intent.
+`random.episodes` (1..40) and `random.lines` (1..8) bound work and preserve TxnID
+uniqueness/under-capacity checks. Memory/CMO/MMIO regions and operations must be
+enabled. All existing independent checkers remain required, plus an INI-derived
+segment completion/identity check and zero-resource samples at every action
+start. Training is matched to the latest accepted request under that independently
+checked serial contract, preventing a reused address/tag from binding to an older
+untrained cache hit. Source/address/TraceTag/needT checks remain strict; general
+training eligibility completeness is still not claimed. This is serialized mixed-operation coverage;
+it does not publish arbitrary same-line overlap or global acceptance.
+
 `make global-test` remains an explicit rejection guard returning 2. No finite
 profile publishes full architectural global acceptance. VBOP, full errors,
 nested same-line overlap, auxiliary overflow replacement and arbitrary topology

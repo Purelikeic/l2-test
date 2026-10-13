@@ -34,7 +34,8 @@ static std::vector<PlannedTestAction> run(TLLocalConfig config, TestScenario sce
     if (defer) {
         check(owners[0]->calls.size() >= 2);
         const auto& a = owners[0]->calls[0]; const auto& b = owners[0]->calls[1];
-        check(a.kind == b.kind && a.address == b.address && a.txn == b.txn && a.traceTag == b.traceTag);
+        check(a.kind == b.kind && a.address == b.address && a.txn == b.txn && a.traceTag == b.traceTag &&
+              a.data == b.data && a.byteEnable == b.byteEnable);
     }
     return accepted;
 }
@@ -51,6 +52,48 @@ int main(int argc, char** argv) {
     auto first = run(config, TestScenario::RandomRead); auto second = run(config, TestScenario::RandomRead);
     check(first.size() == 96 && first.size() == second.size());
     for (unsigned i = 0; i < first.size(); ++i) check(first[i].node == second[i].node && first[i].action.address == second[i].action.address && first[i].action.kind == second[i].action.kind);
+    auto actionConfig = config;
+    actionConfig.memoryEnable = actionConfig.mmioEnable = actionConfig.cmoEnable = true;
+    actionConfig.cmoEnableCBOClean = actionConfig.cmoEnableCBOFlush = actionConfig.cmoEnableCBOInval = true;
+    actionConfig.cmoStart = actionConfig.memoryStart; actionConfig.cmoEnd = actionConfig.memoryEnd;
+    actionConfig.mmioStart = 0x40000; actionConfig.mmioEnd = 0x41000;
+    actionConfig.randomActionEpisodes = 32; actionConfig.randomActionLines = 4;
+    const auto mixed = run(actionConfig, TestScenario::RandomActions);
+    const auto repeated = run(actionConfig, TestScenario::RandomActions, true);
+    check(mixed.size() == repeated.size() && mixed.size() >= 32 && mixed.size() <= 128);
+    const auto layout = TestNodeLayout(actionConfig);
+    std::map<uint64_t, unsigned> owned;
+    for (unsigned i=0; i<mixed.size(); ++i) {
+        const auto& a = mixed[i]; const auto& b = repeated[i];
+        check(a.node == b.node && a.action.kind == b.action.kind && a.action.address == b.action.address &&
+              a.action.txn == b.action.txn && a.action.traceTag == b.action.traceTag &&
+              a.action.data == b.action.data && a.action.byteEnable == b.action.byteEnable);
+        check(a.action.txn < 256 && a.action.kind != TestActionKind::MakeUnique);
+        const auto k=a.action.kind; const auto address=a.action.address;
+        const auto role=layout[a.node].kind;
+        if (role == TestNodeKind::MMIO) {
+            check(k == TestActionKind::ReadNoSnp || k == TestActionKind::WriteNoSnp);
+            check(a.action.size == 3 && address >= actionConfig.mmioStart && address < actionConfig.mmioStart + 4*64);
+        } else {
+            check(address >= actionConfig.memoryStart && address < actionConfig.memoryStart + 4*64 && !(address & 63));
+            if (role == TestNodeKind::Transient) check(k == TestActionKind::ReadOnce);
+            else if (k == TestActionKind::AcquireShared || k == TestActionKind::AcquireUnique) {
+                check(!owned.count(address)); owned[address]=a.node;
+            } else {
+                check(owned.count(address) && owned.at(address)==a.node);
+                if (k == TestActionKind::Evict || k == TestActionKind::WriteBack ||
+                    k == TestActionKind::Flush || k == TestActionKind::Invalidate) owned.erase(address);
+            }
+        }
+    }
+    check(owned.empty());
+    actionConfig.sequenceModes[0] = TLSequenceMode::RANDOM_ACTIONS;
+    check(run(actionConfig, TestScenario::Configured).size() == mixed.size());
+    actionConfig.randomActionEpisodes=41;
+    bool invalid=false;
+    try { run(actionConfig, TestScenario::RandomActions); }
+    catch (const std::invalid_argument&) { invalid=true; }
+    check(invalid);
     for (const auto node : TestNodeLayout(config)) config.sequenceModes[node.id] = TLSequenceMode::PASSIVE;
     config.sequenceModes[0] = TLSequenceMode::FUZZ_STREAM;
     const auto stream = run(config, TestScenario::Configured);
@@ -70,5 +113,5 @@ int main(int argc, char** argv) {
     check(anvil.size() == 24);
     check(std::count_if(anvil.begin(), anvil.end(), [](const auto& p) { return p.action.kind == TestActionKind::MakeUnique; }) == 8);
     check(std::count_if(anvil.begin(), anvil.end(), [](const auto& p) { return p.action.kind == TestActionKind::WriteBack; }) == 8);
-    std::puts("protocol-neutral node fuzzer: configured identities, seed replay, stable deferred actions, ARI/stream and INI finite modes passed");
+    std::puts("protocol-neutral node fuzzer: configured modes, bounded random segments, seed/deferred replay, legal leases and budget rejection passed");
 }
