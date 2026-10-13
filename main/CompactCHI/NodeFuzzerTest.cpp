@@ -20,13 +20,14 @@ class Hooks : public TestScenarioHooks {
 public:
     bool ready() const override { return true; }
 };
-static std::vector<PlannedTestAction> run(TLLocalConfig config, TestScenario scenario, bool defer = false) {
+static std::vector<PlannedTestAction> run(TLLocalConfig config, TestScenario scenario, bool defer = false,
+    std::vector<PlannedTestAction> replay = {}) {
     std::vector<std::unique_ptr<RecordingNode>> owners;
     std::vector<TestNode*> views;
     for (auto descriptor : TestNodeLayout(config)) { owners.push_back(std::make_unique<RecordingNode>(descriptor)); views.push_back(owners.back().get()); }
     owners[0]->defer = defer;
     Hooks hooks; uint64_t cycle = 0;
-    NodeFuzzer fuzzer(config, views, hooks, scenario); fuzzer.set_cycles(&cycle);
+    NodeFuzzer fuzzer(config, views, hooks, scenario, std::move(replay)); fuzzer.set_cycles(&cycle);
     std::vector<PlannedTestAction> accepted;
     fuzzer.onAction([&](const auto& planned) { accepted.push_back(planned); });
     for (cycle = 0; cycle < 500 && !fuzzer.done(); ++cycle) fuzzer.tick();
@@ -60,6 +61,14 @@ int main(int argc, char** argv) {
     actionConfig.randomActionEpisodes = 32; actionConfig.randomActionLines = 4;
     const auto mixed = run(actionConfig, TestScenario::RandomActions);
     const auto repeated = run(actionConfig, TestScenario::RandomActions, true);
+    const auto replayed = run(actionConfig, TestScenario::ActionReplay, true, mixed);
+    check(replayed.size()==mixed.size());
+    for (unsigned i=0;i<mixed.size();++i) {
+        const auto& a=mixed[i]; const auto& b=replayed[i];
+        check(a.node==b.node && a.action.kind==b.action.kind && a.action.address==b.action.address &&
+            a.action.txn==b.action.txn && a.action.traceTag==b.action.traceTag && a.action.size==b.action.size &&
+            a.action.byteEnable==b.action.byteEnable && a.action.data==b.action.data);
+    }
     check(mixed.size() == repeated.size() && mixed.size() >= 32 && mixed.size() <= 128);
     const auto layout = TestNodeLayout(actionConfig);
     std::map<uint64_t, unsigned> owned;

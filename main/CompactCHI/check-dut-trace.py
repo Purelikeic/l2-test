@@ -11,14 +11,14 @@ lower_profile = sys.argv[2:] == ["lower-snoop"]
 victim_profile = sys.argv[2:] == ["victim"]
 profile = sys.argv[2] if len(sys.argv) > 2 else "deterministic-read"
 if profile == "configured" and (root / "scenario.json").exists():
-    profile = {0: "configured", 1: "deterministic-read", 2: "random-read", 3: "lower-snoop", 4: "victim", 5: "node-actions", 6: "deterministic-read", 7: "random-actions"}[json.loads((root / "scenario.json").read_text())]
+    profile = {0: "configured", 1: "deterministic-read", 2: "random-read", 3: "lower-snoop", 4: "victim", 5: "node-actions", 6: "deterministic-read", 7: "random-actions", 8: "action-replay"}[json.loads((root / "scenario.json").read_text())]
 randomized, lower_profile, victim_profile = profile == "random-read", profile == "lower-snoop", profile == "victim"
 scopes = runpy.run_path(str(Path(__file__).with_name("profile_scopes.py")))["SCOPES"]
 rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
 seed = rows[0]["seed"]
 events = rows[1:]
 assert all(r["sim_time"] == 2 * r["cycle"] for r in events)
-if profile != "configured":
+if profile not in ("configured", "action-replay"):
     assert {r["trace_tag"] for r in events if r["direction"] == "cchi_rx_req"} == {False, True}
 assert [r["cycle"] for r in events] == sorted(r["cycle"] for r in events)
 node_check = runpy.run_path(str(Path(__file__).with_name("check-node-events.py")))
@@ -33,10 +33,10 @@ transport_evidence["mutationRejections"] = transport_tools["mutations"](events)
 prefetch_tools = runpy.run_path(str(Path(__file__).with_name("check-prefetch.py")))
 prefetch_rows = [json.loads(line) for line in (root / "prefetch.jsonl").read_text().splitlines()]
 prefetch_coverage = "--prefetch-training-coverage" in sys.argv[3:]
-prefetch_evidence = prefetch_tools["check"](prefetch_rows, events, prefetch_coverage, profile == "random-actions")
-prefetch_evidence["mutationRejections"] = prefetch_tools["mutations"](prefetch_rows, events, prefetch_coverage, profile == "random-actions")
+prefetch_evidence = prefetch_tools["check"](prefetch_rows, events, prefetch_coverage, profile in ("random-actions", "action-replay"))
+prefetch_evidence["mutationRejections"] = prefetch_tools["mutations"](prefetch_rows, events, prefetch_coverage, profile in ("random-actions", "action-replay"))
 prefetch_by_time = {r["sim_time"]:r for r in prefetch_rows}
-if profile in ("node-actions", "configured", "random-actions"):
+if profile in ("node-actions", "configured", "random-actions", "action-replay"):
     expected_requests = sum(r["direction"] == "cchi_rx_req" and r["handshake"] for r in events)
     latency = {}
     victim_evidence = None
@@ -160,6 +160,8 @@ transition_tools = runpy.run_path(str(Path(__file__).with_name("check-transition
 actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
 if profile == "random-actions":
     node_evidence["randomActions"] = runpy.run_path(str(Path(__file__).with_name("check-random-actions.py")))["check"](root, actions, resource_rows)
+if profile == "action-replay":
+    node_evidence["actionReplay"] = runpy.run_path(str(Path(__file__).with_name("replay-actions.py")))["check"](root, actions, resource_rows)
 transition_evidence = transition_tools["check"](events, actions, architectural_evidence, directory_rows)
 transition_evidence["mutations"] = transition_tools["mutations"](events, actions, architectural_evidence, directory_rows)
 residency_tools = runpy.run_path(str(Path(__file__).with_name("check-residency.py")))

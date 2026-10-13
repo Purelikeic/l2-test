@@ -5,7 +5,7 @@
 #include <functional>
 #include <optional>
 
-enum class TestScenario { Configured, DeterministicRead, RandomRead, LowerSnoop, Victim, Actions, Replay, RandomActions };
+enum class TestScenario { Configured, DeterministicRead, RandomRead, LowerSnoop, Victim, Actions, Replay, RandomActions, ActionReplay };
 struct PlannedTestAction { unsigned node; TestAction action; };
 class TestScenarioHooks {
 public:

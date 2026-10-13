@@ -68,6 +68,24 @@ untrained cache hit. Source/address/TraceTag/needT checks remain strict; general
 training eligibility completeness is still not claimed. This is serialized mixed-operation coverage;
 it does not publish arbitrary same-line overlap or global acceptance.
 
+Complete mixed-action diagnostics use:
+
+```sh
+python3 l2-test/main/CompactCHI/replay-actions.py build/compactchi-native-obj/VL2Cache SOURCE_RUN NEW_OUTPUT
+```
+
+Run from the parent with a current native binary. `SOURCE_RUN` supplies
+`actions.jsonl`, canonical seed and its original `tltest.ini`. The tool writes
+`ANSERL2_ACTIONS_V1` with all action identities, permission/control kind, size,
+byte-enable and 64-byte data, then replays on a new output directory. The native
+checker compares every accepted action field against that copied intent and
+requires zero resources at action start alongside existing transport/data/storage
+checks. `replay-evidence.json` distinguishes passed replay, protocol failure,
+input/runtime failure, checker failure and timeout. Optional `data-error` validates
+only the diagnostic path and never publishes DUT acceptance. Old six-column read
+replay remains supported. Original cycle timing and unaccepted choices are not
+reconstructed, and this entry does not perform minimization.
+
 `make global-test` remains an explicit rejection guard returning 2. No finite
 profile publishes full architectural global acceptance. VBOP, full errors,
 nested same-line overlap, auxiliary overflow replacement and arbitrary topology

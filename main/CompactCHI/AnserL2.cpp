@@ -5,6 +5,7 @@
 #include "../System/TLConfig.hpp"
 #include "../Events/TLSystemEvent.hpp"
 #include "Requester.hpp"
+#include "ActionReplay.hpp"
 #include "EbHome.hpp"
 #include "LowerSnoopBoard.hpp"
 #include "CanonicalTrace.hpp"
@@ -119,7 +120,8 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
         trace->record(event);
     }
     bool ready() const override {
-        const bool drained = !actionScheduler || actionScheduler->getScenario() != TestScenario::RandomActions ||
+        const bool drained = !actionScheduler || (actionScheduler->getScenario() != TestScenario::RandomActions &&
+            actionScheduler->getScenario() != TestScenario::ActionReplay) ||
             resourceSnapshot().empty();
         return requester->idle() && board->idle() && home->idle() && drained;
     }
@@ -225,7 +227,12 @@ public:
                TestScenario scenario, const std::string& replayPath, bool mutateData)
         : dut(dut), simulation(simulation), lowerProfile(scenario == TestScenario::LowerSnoop),
           victimProfile(scenario == TestScenario::Victim), scenario(scenario), mutateData(mutateData), output(output) {
-        if (!replayPath.empty()) {
+        if (scenario == TestScenario::ActionReplay) {
+            std::ifstream input(replayPath);
+            if (!input) throw std::invalid_argument("action-replay requires a readable full-intent file");
+            replay = compactchi::readActionReplay(input);
+            std::filesystem::copy_file(replayPath, output / "replay-actions.txt", std::filesystem::copy_options::overwrite_existing);
+        } else if (!replayPath.empty()) {
             std::ifstream input(replayPath);
             if (!input) throw std::invalid_argument("cannot open action replay file");
             uint64_t plannedCycle, address; unsigned source, txn, opcode, tag;
@@ -590,6 +597,7 @@ int main(int argc, char** argv) {
         else if (profile == "victim") scenario = TestScenario::Victim;
         else if (profile == "node-actions") scenario = TestScenario::Actions;
         else if (profile == "random-actions") scenario = TestScenario::RandomActions;
+        else if (profile == "action-replay") scenario = TestScenario::ActionReplay;
         else throw std::invalid_argument("unknown action fuzzer mode");
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);

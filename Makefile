@@ -457,6 +457,13 @@ compactchi-forward-multi-test:
 	$(COMPACTCHI_CHECK_DIR)/forward-multi-test $(COMPACTCHI_CHECK_DIR)/forward-multi
 	python3 $(CURDIR)/main/CompactCHI/ForwardMultiCheckerTest.py $(COMPACTCHI_CHECK_DIR)/forward-multi
 
+.PHONY: compactchi-action-replay-test
+compactchi-action-replay-test:
+	@mkdir -p $(COMPACTCHI_CHECK_DIR)
+	$(CXX) -std=c++20 -O2 $(CURDIR)/main/CompactCHI/ActionReplayTest.cpp -o $(COMPACTCHI_CHECK_DIR)/action-replay-test
+	$(COMPACTCHI_CHECK_DIR)/action-replay-test
+	python3 -B $(CURDIR)/main/CompactCHI/ReplayActionsTest.py
+
 .PHONY: compactchi-random-actions-checker-test
 compactchi-random-actions-checker-test:
 	python3 $(CURDIR)/main/CompactCHI/RandomActionsCheckerTest.py

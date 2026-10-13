@@ -24,7 +24,7 @@ NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& n
             declared = selected;
         }
     }
-    if (declared) {
+    if (declared && scenario != TestScenario::ActionReplay) {
         if (scenario != TestScenario::Configured && scenario != *declared) throw std::invalid_argument("CLI and INI mode disagree");
         scenario = *declared;
     }
@@ -35,10 +35,10 @@ NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& n
             node->descriptor.kind == TestNodeKind::Transient ? transient : mmio;
         group.push_back(node->descriptor.id);
     }
-    if (scenario != TestScenario::Configured && scenario != TestScenario::Replay &&
+    if (scenario != TestScenario::Configured && scenario != TestScenario::Replay && scenario != TestScenario::ActionReplay &&
         (coherent.empty() || transient.empty()))
         throw std::invalid_argument("finite action mode needs configured coherent and transient nodes");
-    if (cfg.unifiedSequenceEnable && scenario != TestScenario::Configured)
+    if (cfg.unifiedSequenceEnable && scenario != TestScenario::Configured && scenario != TestScenario::ActionReplay)
         throw std::invalid_argument("finite and unified sequence modes conflict");
     if (scenario == TestScenario::Configured && cfg.unifiedSequenceEnable && cfg.unifiedSequenceMode == TLUnifiedSequenceMode::ANVIL) {
         const auto& a = cfg.unifiedSequenceModeAnvil;
@@ -61,7 +61,7 @@ NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& n
             cfg.cmoStart > cfg.memoryStart || cfg.cmoEnd < cfg.memoryStart + span)
             throw std::invalid_argument("random-actions requires bounded episodes/lines and enabled aligned memory/CMO/MMIO regions");
     }
-    if (scenario == TestScenario::Replay && this->replay.empty())
+    if ((scenario == TestScenario::Replay || scenario == TestScenario::ActionReplay) && this->replay.empty())
         throw std::invalid_argument("empty action replay");
 }
 TestActionResult NodeFuzzer::submit(const PlannedTestAction& planned) {
@@ -245,7 +245,7 @@ bool NodeFuzzer::done() const {
         return true;
     }
     if (scenario == TestScenario::LowerSnoop) return issued == 5 && phase == 3;
-    return issued == (scenario == TestScenario::Replay ? replay.size() : scenario == TestScenario::RandomRead ? 96 :
+    return issued == ((scenario == TestScenario::Replay || scenario == TestScenario::ActionReplay) ? replay.size() : scenario == TestScenario::RandomRead ? 96 :
         scenario == TestScenario::Victim ? 10 : scenario == TestScenario::Actions ? 16 : 4);
 }
 void NodeFuzzer::tick() {
@@ -280,9 +280,9 @@ void NodeFuzzer::tick() {
     }
     // Hold a random choice on Deferred rather than selecting another node/line.
     if (replay.empty()) replay.push_back(next());
-    const auto planned = scenario == TestScenario::Replay ? replay.at(issued) : replay.front();
+    const auto planned = (scenario == TestScenario::Replay || scenario == TestScenario::ActionReplay) ? replay.at(issued) : replay.front();
     if (submit(planned) == TestActionResult::Accepted) {
         ++issued;
-        if (scenario != TestScenario::Replay) replay.clear();
+        if (scenario != TestScenario::Replay && scenario != TestScenario::ActionReplay) replay.clear();
     }
 }
