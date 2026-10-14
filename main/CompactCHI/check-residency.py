@@ -174,10 +174,17 @@ def check(directory, data, model):
 
 def mutations(directory, data, model):
     variants = []
+    covered = set()
     geometry=model["geometry"]; scoped={(g["slice"],g["set"]) for g in model["groups"]}
     for i,row in enumerate(directory[1:],1):
         for s,e in enumerate(row["entries"]):
             if not e["state"] or (s,row["set"]) not in scoped: continue
+            # Positive check() still inspects every slot/byte. Negative audit
+            # probes need one representative per semantic class, not a full
+            # Directory clone for every resident in a long pressure stream.
+            signature = (s, e["state"], e["client"])
+            if signature in covered: continue
+            covered.add(signature)
             for field,value in (("state",0),("tag",e["tag"]+100),("client",not e["client"])):
                 changed=copy.deepcopy(directory); changed[i]["entries"][s][field]=value
                 variants.append((changed,data))

@@ -153,6 +153,35 @@ model=tools["derive"](events,[],arch,G)
 assert len(model["exclusions"])==1 and not model["expected"]
 results.append(dict(case="overflow-excluded",provedGroups=len(model["groups"]),exclusions=model["exclusions"]))
 
+# Mutation memory must not scale with the number of otherwise identical
+# residents. Full positive coverage must still reject a missing last slot.
+def full_snapshot(sets, ways):
+    g=dict(schema=1,sets=sets,ways=ways,slices=4,lineBytes=64,addrBits=48)
+    directory,data=[g],[g];expected=[]
+    for set_id in range(sets):
+        for way in range(ways):
+            entries=[];lines=[]
+            for slice_id in range(4):
+                tag=8+way;address=((tag*sets+set_id)*4+slice_id)*64
+                entries.append(dict(tag=tag,state=1,client=False,clientState=0,clientID=0))
+                lines.append(dict(data=OLD.hex(),error=False))
+                expected.append(dict(address=address,state=1,client=False,data=OLD.hex(),undefined=False))
+            directory.append(dict(set=set_id,way=way,entries=entries))
+            data.append(dict(set=set_id,way=way,lines=lines))
+    model=dict(geometry=g,groups=[dict(slice=s,set=t) for s in range(4) for t in range(sets)],
+               expected=expected,exclusions=[],scope='host mutation scalability')
+    tools['check'](directory,data,model)
+    return directory,data,model
+small=full_snapshot(2,2);large=full_snapshot(16,8)
+small_probes=tools['mutations'](*small);large_probes=tools['mutations'](*large)
+assert small_probes==large_probes and small_probes>0
+rejected+=small_probes+large_probes
+missing=copy.deepcopy(large[0]);missing[-1]['entries'][-1]['state']=0
+try:tools['check'](missing,large[1],large[2])
+except AssertionError:rejected+=1
+else:raise AssertionError('bounded probes removed full positive slot coverage')
+results.append(dict(case='bounded-probes-full-positive-coverage',smallResidents=16,largeResidents=512,probes=large_probes))
+
 state=dict(state="passed",cases=len(results),mutationRejections=rejected,results=results,
            scope="independent synthetic terminal snapshots and input obligations; native evidence is checked separately")
 (root/"residency-host.json").write_text(json.dumps(state,indent=2)+"\n")
