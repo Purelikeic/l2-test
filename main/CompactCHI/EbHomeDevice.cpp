@@ -8,7 +8,7 @@ void EbHome::receiveDeviceData(const EbData& flit) {
     require(ctx.device && ctx.write && ctx.rspAccepted && flit.source == ctx.request.source && flit.target == node,
         "device data preceded DBID or route invalid");
     require(flit.opcode == 3 && flit.respErr == 0 && (flit.dataId == 0 || flit.dataId == 2) &&
-        flit.traceTag == ctx.plan.responseTraceTag, "device write data opcode/tag/error invalid");
+        flit.traceTag == ctx.request.traceTag, "device write data opcode/tag/error invalid");
     const unsigned beat = flit.dataId / 2;
     require((ctx.dataMask & (1U << beat)) && !(ctx.receivedMask & (1U << beat)), "device data beat invalid/duplicate");
     require(flit.byteEnable == uint32_t(ctx.byteMask >> (beat * 32)), "device byte enables differ from independent intent");

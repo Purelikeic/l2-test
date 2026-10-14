@@ -121,11 +121,12 @@ void EbHome::start(unsigned owner) {
     const auto& req = ctx.request;
     const auto& plan = ctx.plan;
     if (ctx.device) {
-        if (ctx.write) responses.push_back({{node, req.source, req.txn, 5, ctx.dbid, 0, plan.responseTraceTag}, owner});
+        const bool responseTraceTag = req.traceTag;
+        if (ctx.write) responses.push_back({{node, req.source, req.txn, 5, ctx.dbid, 0, responseTraceTag}, owner});
         else {
             const auto& bytes = deviceMemory[req.address & ~uint64_t(63)];
             for (unsigned beat = 0; beat < 2; ++beat) if (ctx.dataMask & (1U << beat)) {
-                EbData flit{node, req.source, req.txn, 4, ctx.dbid, node, beat * 2, 0, plan.responseTraceTag};
+                EbData flit{node, req.source, req.txn, 4, ctx.dbid, node, beat * 2, 0, responseTraceTag};
                 std::copy_n(bytes.begin() + beat * 32, 32, flit.data.begin()); data.push_back({flit, owner});
             }
         }

@@ -254,6 +254,26 @@ int main() {
         drainMemory();
         for (unsigned i = 0; i < 64; ++i)
             require(memory.backend().access(0x1040 + i) == dirty[i], "Home Snoop responsibility did not reach memory");
+        ctx.cfg.mmioEnable = true;
+        ctx.cfg.mmioStart = 0x4000; ctx.cfg.mmioEnd = 0x5000;
+        home.setDeviceOracle([&](uint64_t) { return std::make_pair(initial, uint64_t(0xff)); });
+        compactchi::EbRequest deviceWrite{1,8,2048,0x1c,0x4000,true};
+        deviceWrite.size = 3; deviceWrite.allowRetry = false; deviceWrite.expCompAck = false;
+        home.accept(deviceWrite); // Default HomePlan tag is false; device must echo request tag.
+        require(home.response().traceTag, "MMIO DBIDResp lost original request TraceTag");
+        const auto deviceDbid = home.response().dbid;
+        home.responseAccepted();
+        auto deviceData = copy(deviceDbid, 0, 0, true, initial);
+        deviceData.opcode = 3; deviceData.byteEnable = 0xff;
+        auto wrongDeviceTag = deviceData; wrongDeviceTag.traceTag = false;
+        reject([&] { home.receiveDeviceData(wrongDeviceTag); });
+        home.receiveDeviceData(deviceData);
+        require(home.idle(), "MMIO write context did not retire");
+        auto deviceRead = deviceWrite; deviceRead.opcode = 4; deviceRead.traceTag = false;
+        home.accept(deviceRead);
+        require(!home.datum().traceTag, "MMIO read data lost original request TraceTag");
+        home.dataAccepted();
+        require(home.idle(), "MMIO read context did not retire");
         std::printf("E.b Home: completion/copyback, issuer/type Retry/P-Credit and %u mutations passed\n",
                     rejected);
         return 0;
