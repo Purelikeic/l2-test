@@ -4,25 +4,30 @@ import json
 from pathlib import Path
 import sys
 
+DEFAULT_GEOMETRY = dict(sets=512, slices=4, lineBytes=64)
+
 
 def check(events, seed, topo=None):
     fired = [row for row in events if row["handshake"]]
     base = topo["memoryStart"] if topo else 0x1000
     coherent = next(n["id"] for n in topo["nodes"] if n["kind"] == 0 and n["mode"] != 0) if topo else 1
     transient = next(n["id"] for n in topo["nodes"] if n["kind"] == 1 and n["mode"] != 0) if topo else 0
-    addresses = [base + i * 0x8000 for i in range(8)]
+    geometry = DEFAULT_GEOMETRY
+    stride = geometry["slices"] * geometry["sets"] * geometry["lineBytes"]
+    addresses = [base + i * stride for i in range(12)]
     requests = [row for row in fired if row["direction"] == "cchi_rx_req"]
     expected_requests = [(coherent if i == 0 else transient, 20 + i, 16 if i == 0 else 3,
-                          addresses[i] if i < 8 else addresses[0 if i == 8 else 5]) for i in range(10)]
+                          addresses[i] if i < 12 else addresses[0 if i == 12 else 9]) for i in range(14)]
     assert [(r["node"], r["txn_id"], r["opcode"], r["address"]) for r in requests] == expected_requests
-    lower = [r for r in fired if r["direction"] == "chi_tx_req" and (r["address"] & 0x7fff) == (base & 0x7fff)]
+    lower = [r for r in fired if r["direction"] == "chi_tx_req" and
+             (r["address"] & (stride - 1)) == (base & (stride - 1))]
     reads = [r for r in lower if r["opcode"] in (7, 0x26)]
     assert [(r["opcode"], r["address"]) for r in reads] == [(7, addresses[0])] + [
         (0x26, a) for a in addresses[1:] + [addresses[0]]]
     victims = [r for r in lower if r["opcode"] in (0x1b, 0x42)]
     assert [(r["opcode"], r["address"]) for r in victims] == [(0x1b, addresses[0])] + [
         (0x42, a) for a in addresses[1:5]]
-    assert len(lower) == 14
+    assert len(lower) == 18
     branch_rows = []
     dirty = bytearray(((addresses[0] >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
     dirty[0] ^= 0xa5
@@ -70,17 +75,18 @@ def check(events, seed, topo=None):
         beat = row["data_id"]
         assert bytes.fromhex(row["data"]) == dirty[beat * 32:(beat + 1) * 32]
     return {"primaryVictims": branch_rows, "dirtyClientRecallBeats": len(returned),
-            "residentHitAddress": addresses[5], "dirtyMemoryReadbackAddress": addresses[0]}
+            "residentHitAddress": addresses[9], "dirtyMemoryReadbackAddress": addresses[0]}
 
 
 def mutations(events, seed, topo=None):
     check(events, seed, topo)
+    stride = DEFAULT_GEOMETRY["slices"] * DEFAULT_GEOMETRY["sets"] * DEFAULT_GEOMETRY["lineBytes"]
     def corrupt_data(rows):
         row = next(r for r in rows if r["handshake"] and r["direction"] == "chi_tx_dat" and r["opcode"] == 2)
         row["data"] = f"{int(row['data'][:2], 16) ^ 1:02x}" + row["data"][2:]
     def wrong_victim(rows):
         row = next(r for r in rows if r["handshake"] and r["direction"] == "chi_tx_req" and r["opcode"] == 0x1b)
-        row["address"] += 0x8000
+        row["address"] += stride
     def dirty_as_clean(rows):
         row = next(r for r in rows if r["handshake"] and r["direction"] == "chi_tx_req" and r["opcode"] == 0x1b)
         row["opcode"] = 0x42

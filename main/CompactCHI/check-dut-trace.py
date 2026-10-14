@@ -90,7 +90,7 @@ else:
         elif direction == "cchi_rx_rsp" and row["opcode"] == 0:
             key = acks.pop((row["node"], row["txn_id"]))
             assert beats[key] == {0, 1}
-    expected_requests = 10 if victim_profile else 96 if randomized else 5 if lower_profile else 4
+    expected_requests = 14 if victim_profile else 96 if randomized else 5 if lower_profile else 4
     assert len(requests) == expected_requests and len(beats) == expected_requests and not acks
     if randomized:
         assert {key[0] for key in requests} == set(coherent[:2] + transient[:2])

@@ -86,8 +86,8 @@ PlannedTestAction NodeFuzzer::next() {
             action.kind = TestActionKind::AcquireUnique;
         } else planned.node = transient[random() % 2];
     } else if (scenario == TestScenario::Victim) {
-        const unsigned line = issued < 8 ? issued : issued == 8 ? 0 : 5;
-        action.address += uint64_t(line) * 0x8000;
+        const unsigned line = issued < 12 ? issued : issued == 12 ? 0 : 9;
+        action.address += uint64_t(line) * 0x20000;
         if (!issued) { planned.node = coherent.front(); action.kind = TestActionKind::AcquireUnique; }
     } else if (scenario == TestScenario::Actions) {
         // The same agent API drives permission, release, CMO and MMIO paths.
@@ -246,7 +246,7 @@ bool NodeFuzzer::done() const {
     }
     if (scenario == TestScenario::LowerSnoop) return issued == 5 && phase == 3;
     return issued == ((scenario == TestScenario::Replay || scenario == TestScenario::ActionReplay) ? replay.size() : scenario == TestScenario::RandomRead ? 96 :
-        scenario == TestScenario::Victim ? 10 : scenario == TestScenario::Actions ? 16 : 4);
+        scenario == TestScenario::Victim ? 14 : scenario == TestScenario::Actions ? 16 : 4);
 }
 void NodeFuzzer::tick() {
     if (startupInterval < cfg.startupCycle) { ++startupInterval; return; }

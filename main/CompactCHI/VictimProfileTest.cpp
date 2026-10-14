@@ -8,7 +8,7 @@ static EbRequest read(unsigned i) { return {1, 8, 0, i == 0 ? 7U : 0x26U, Victim
 static EbRequest release(unsigned i) { return {1, 8, 0, i == 0 ? 0x1bU : 0x42U, VictimProfile::address(i)}; }
 static VictimProfile primed() {
     VictimProfile p;
-    for (unsigned i = 0; i < 5; ++i) p.observe(read(i));
+    for (unsigned i = 0; i < 9; ++i) p.observe(read(i));
     return p;
 }
 template<class F> void rejects(F action) {
@@ -19,18 +19,18 @@ template<class F> void rejects(F action) {
 int main() {
     VictimProfile profile;
     assert(!profile.complete());
-    for (unsigned i = 0; i < 4; ++i) profile.observe(read(i));
+    for (unsigned i = 0; i < 8; ++i) profile.observe(read(i));
     profile.dirtyStored = true;
     // Independent explicit branch expectations: dirty, clean Comp, clean DBID,
     // clean Comp, clean DBID. Do not synthesize vectors from observed DUT output.
     const bool copyback[] = {false, false, true, false, true};
     for (unsigned i = 0; i < 5; ++i) {
-        profile.observe(read(i + 4));
+        profile.observe(read(i + 8));
         const auto plan = profile.observe(release(i));
         assert(plan.cleanCopyback == copyback[i]);
     }
     assert(profile.complete());
-    rejects([&] { profile.observe(read(9)); }); // F must be a resident hit.
+    rejects([&] { profile.observe(read(13)); }); // J must be a resident hit.
     rejects([&] { profile.observe(release(5)); });
     rejects([] { VictimProfile p; p.observe(read(1)); });
     rejects([] { VictimProfile p; auto r = read(0); r.opcode = 0x26; p.observe(r); });

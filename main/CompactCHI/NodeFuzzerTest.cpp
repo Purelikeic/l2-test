@@ -53,6 +53,16 @@ int main(int argc, char** argv) {
     auto first = run(config, TestScenario::RandomRead); auto second = run(config, TestScenario::RandomRead);
     check(first.size() == 96 && first.size() == second.size());
     for (unsigned i = 0; i < first.size(); ++i) check(first[i].node == second[i].node && first[i].action.address == second[i].action.address && first[i].action.kind == second[i].action.kind);
+    const auto victim = run(config, TestScenario::Victim);
+    check(victim.size() == 15); // 14 requests and the independent dirty store.
+    unsigned victimRequests = 0;
+    for (const auto& p : victim) if (p.action.kind != TestActionKind::Store) {
+        const unsigned line = victimRequests < 12 ? victimRequests : victimRequests == 12 ? 0 : 9;
+        check(p.action.address == config.memoryStart + uint64_t(line) * 0x20000);
+        check(p.action.txn == 20 + victimRequests);
+        ++victimRequests;
+    }
+    check(victimRequests == 14);
     auto actionConfig = config;
     actionConfig.memoryEnable = actionConfig.mmioEnable = actionConfig.cmoEnable = true;
     actionConfig.cmoEnableCBOClean = actionConfig.cmoEnableCBOFlush = actionConfig.cmoEnableCBOInval = true;

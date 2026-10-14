@@ -7,7 +7,7 @@ allocation. Overflow needs an independently validated fixed victim vector.
 import copy
 from collections import defaultdict, deque
 
-DEFAULT_GEOMETRY = dict(schema=1, sets=128, ways=4, slices=4, lineBytes=64, addrBits=48)
+DEFAULT_GEOMETRY = dict(schema=1, sets=512, ways=8, slices=4, lineBytes=64, addrBits=48)
 ALLOCATE = {"refill", "makeunique-no-data"}
 DISCARD = {"cmo-evict-discard", "cmo-cleaninvalid-discard", "cmo-makeinvalid-discard"}
 VICTIM = {"victim-evict-discard", "victim-writeback-discard"}
@@ -24,13 +24,14 @@ def derive(events, actions, architectural, geometry, profile="host", base=None):
     fixed_group, fixed_addresses, fixed_victims = None, set(), set()
     if profile == "victim":
         assert geometry == DEFAULT_GEOMETRY and base is not None
-        addresses = [base+i*0x8000 for i in range(8)]
+        stride = geometry["slices"] * geometry["sets"] * geometry["lineBytes"]
+        addresses = [base + i * stride for i in range(12)]
         fixed_group = group(base)
         assert all(group(a) == fixed_group for a in addresses)
         assert allocated[fixed_group] == set(addresses), "fixed victim vector has extra/missing allocations"
         # Caller must first validate check-victim-events.py's independent
         # requests/read/victim vector, including the dirty commitment/readback.
-        fixed_addresses = {addresses[i] for i in (0,5,6,7)}
+        fixed_addresses = {addresses[i] for i in (0,5,6,7,8,9,10,11)}
         fixed_victims = set(addresses[:5]); scoped.add(fixed_group)
     by_index = defaultdict(list)
     for t in architectural["l2TransitionEvents"]:
