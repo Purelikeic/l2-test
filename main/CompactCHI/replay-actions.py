@@ -92,11 +92,11 @@ def main(args):
     seed=json.loads((source/"canonical.jsonl").read_text().splitlines()[0])["seed"]
     if type(seed) is not int or not 0 < seed <= 0xffffffff:
         raise ValueError("source has invalid seed")
-    configuration=source/"tltest.ini"
+    configuration=source/"cchitest.ini"
     # Require a new directory and copy immutable inputs before execution.
     out.mkdir(parents=True,exist_ok=False)
     replay=out/"replay-actions.txt"; replay.write_text(encoded)
-    fixture=out/"tltest.ini"; fixture.write_bytes(configuration.read_bytes())
+    fixture=out/"cchitest.ini"; fixture.write_bytes(configuration.read_bytes())
     evidence=dict(state="running",scope="complete intent diagnostic replay; no architectural acceptance",
         sourceRun=str(source),seed=seed,acceptedActions=len(actions),validationMutation=mutation,
         sourceActionsDigest=digest(source/"actions.jsonl"),replayDigest=digest(replay),

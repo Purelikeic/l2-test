@@ -11,7 +11,7 @@ def check(root, actions, resources):
         sample = by_cycle[action["cycle"]]
         assert sample["ready"] and all(sample[field] == 0 for field in fields), "random action began with live resources"
     ini = configparser.ConfigParser()
-    ini.read(root / "tltest.ini")
+    ini.read(root / "cchitest.ini")
     cfg, fuzz = ini["tltest.config"], ini["tltest.fuzzer"]
     episodes, lines = int(fuzz.get("random.episodes", "32"), 0), int(fuzz.get("random.lines", "4"), 0)
     assert 1 <= episodes <= 40 and 1 <= lines <= 8

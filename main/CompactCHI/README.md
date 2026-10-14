@@ -44,7 +44,7 @@ obligations. This is not arbitrary external network topology equivalence.
 From the parent repository, run `make tester-foundation`, then finite native
 profiles: `deterministic-test`, `random-read-test`, `lower-snoop-test`, `victim-test`,
 `node-actions-test` and `configured-node-test`. All use the standard tester INI
-schema; caller-owned `tltest.ini` is never overwritten.
+schema; caller-owned `cchitest.ini` is never overwritten.
 
 Canonical handshakes, stall stability, Retry/issuer-type credit consumption,
 completion role/DBID routing, generated transitions, resource drain and storage
@@ -75,7 +75,7 @@ python3 l2-test/main/CompactCHI/replay-actions.py build/compactchi-native-obj/VL
 ```
 
 Run from the parent with a current native binary. `SOURCE_RUN` supplies
-`actions.jsonl`, canonical seed and its original `tltest.ini`. The tool writes
+`actions.jsonl`, canonical seed and its original `cchitest.ini`. The tool writes
 `ANSERL2_ACTIONS_V1` with all action identities, permission/control kind, size,
 byte-enable and 64-byte data, then replays on a new output directory. The native
 checker compares every accepted action field against that copied intent and

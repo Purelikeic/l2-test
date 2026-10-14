@@ -6,9 +6,9 @@ from pathlib import Path
 
 def topology(root):
     topo = json.loads((root / "topology.json").read_text())
-    if (root / "tltest.ini").exists():
+    if (root / "cchitest.ini").exists():
         ini = configparser.ConfigParser()
-        ini.read(root / "tltest.ini")
+        ini.read(root / "cchitest.ini")
         section = ini["tltest.config"] if ini.has_section("tltest.config") else {}
         counts = [int(section.get(k, default), 0) for k, default in (("core", "1"), ("core.tl_c", "1"), ("core.tl_ul", "0"))]
         assert counts == [topo["coreCount"], topo["tlcPerCore"], topo["tlulPerCore"]]

@@ -7,7 +7,7 @@ import tempfile
 tools = runpy.run_path(str(Path(__file__).with_name("check-random-actions.py")))
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
-    (root / "tltest.ini").write_text("[tltest.config]\nmemory.start=4096\nmmio.start=262144\n[tltest.fuzzer]\nrandom.episodes=3\nrandom.lines=4\n")
+    (root / "cchitest.ini").write_text("[tltest.config]\nmemory.start=4096\nmmio.start=262144\n[tltest.fuzzer]\nrandom.episodes=3\nrandom.lines=4\n")
     actions = []
     for node, address, kinds in ((0,4096,(1,11,5,3)), (1,4160,(8,)), (4,262144,(10,9))):
         for k in kinds:
@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory() as directory:
     fields = ("mshrs", "responses", "writebacks", "requests", "queues", "pipeline", "serializers", "controllers", "retryOwners", "credits")
     resources = [dict(cycle=a["cycle"],ready=True,**{field:0 for field in fields}) for a in actions]
     assert tools["check"](root,actions,resources)["segments"] == 3
-    (root / "tltest.ini").write_text("[tltest.config]\nmemory.start=0x1000\nmmio.start=0x40000\n[tltest.fuzzer]\nrandom.episodes=0x3\nrandom.lines=0x4\n")
+    (root / "cchitest.ini").write_text("[tltest.config]\nmemory.start=0x1000\nmmio.start=0x40000\n[tltest.fuzzer]\nrandom.episodes=0x3\nrandom.lines=0x4\n")
     assert tools["check"](root,actions,resources)["segments"] == 3
     variants = []
     changed=copy.deepcopy(actions); changed.pop(); variants.append(changed)

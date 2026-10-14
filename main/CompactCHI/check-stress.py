@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def check(root, events, actions, resources):
-    ini = configparser.ConfigParser(); ini.read(root / 'tltest.ini')
+    ini = configparser.ConfigParser(); ini.read(root / 'cchitest.ini')
     cfg = ini['tltest.stress']; pattern = cfg['pattern']
     cycles = int(cfg['cycles']); window = int(cfg['outstanding'])
     result = json.loads((root / 'native-result.json').read_text())
@@ -96,7 +96,7 @@ def mutations(root, events, actions, resources):
     rejected = 0
     with tempfile.TemporaryDirectory() as directory:
         copied = Path(directory)
-        for name in ('tltest.ini','native-result.json','topology.json'):
+        for name in ('cchitest.ini','native-result.json','topology.json'):
             shutil.copy2(root/name,copied/name)
         baseline = (copied/'native-result.json').read_text()
         variants = [

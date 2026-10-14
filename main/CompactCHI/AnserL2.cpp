@@ -641,9 +641,9 @@ int main(int argc, char** argv) {
         else throw std::invalid_argument("unknown action fuzzer mode");
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);
-        const std::string ini = argc > 6 ? argv[6] : "tltest.ini";
+        const std::string ini = argc > 6 ? argv[6] : "cchitest.ini";
         auto config = LoadTestConfig([&](TLLocalConfig& config) { config.seed = seed; }, ini);
-        std::filesystem::copy_file(ini, output / "tltest.ini", std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::copy_file(ini, output / "cchitest.ini", std::filesystem::copy_options::overwrite_existing);
         VerilatedContext simulation;
         simulation.commandArgs(argc, argv);
         simulation.traceEverOn(true);
