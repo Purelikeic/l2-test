@@ -51,7 +51,7 @@ static void data(CanonicalTrace& trace, Context& ctx, Channel channel, const EbD
     e.respErr = r.respErr; e.byteEnable = r.byteEnable; e.data = r.data; trace.record(e);
 }
 static void initialize(Context& ctx, GlobalBoard<paddr_t>& board, chi_agent::HomeMemory& memory) {
-    for (uint64_t address : {0x1000U, 0x1040U}) {
+    for (uint64_t address : {0x1000U, 0x1040U, 0x1080U}) {
         const auto bytes = initial(address);
         auto entry = std::make_shared<Global_SBEntry>(); entry->status = Global_SBEntry::SB_VALID;
         entry->data = make_shared_tldata<64>();
@@ -143,8 +143,15 @@ static void roleCase(const std::filesystem::path& directory) {
     bool rejected=false;
     try { home.receiveCompAck(1,8,writeDbid,false); } catch (const std::runtime_error&) { rejected=true; }
     require(rejected,"Home accepted victim Ack before acquisition Ack");
+    EbRequest nextAcquire{1,8,70,38,0x1080,false};
+    request(trace,ctx,nextAcquire); home.accept(nextAcquire); tick();
     response(trace,ctx,Channel::ChiTxRsp,{1,8,readDbid,2,0,0,true},true); home.receiveCompAck(1,8,readDbid,true); tick();
-    response(trace,ctx,Channel::ChiTxRsp,{1,8,writeDbid,2,0,0,false},true); home.receiveCompAck(1,8,writeDbid,false);
+    response(trace,ctx,Channel::ChiTxRsp,{1,8,writeDbid,2,0,0,false},true); home.receiveCompAck(1,8,writeDbid,false); tick();
+    for (unsigned i=0;i<80 && !home.dataValid();++i) tick();
+    require(home.dataValid(),"reused read TxnID did not progress");
+    const unsigned nextDbid=home.datum().dbid;
+    for (unsigned i=0;i<2;++i) { data(trace,ctx,Channel::ChiRxDat,home.datum(),true); home.dataAccepted(); tick(); }
+    response(trace,ctx,Channel::ChiTxRsp,{1,8,nextDbid,2,0,0,false},true); home.receiveCompAck(1,8,nextDbid,false);
     require(home.idle(),"role matrix leaked a context");
 }
 static void permissionCase(const std::filesystem::path& directory) {

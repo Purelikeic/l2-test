@@ -1,5 +1,6 @@
 #include "Requester.hpp"
 #include <algorithm>
+#include <set>
 
 namespace compactchi {
 bool Requester::nodeIdle(unsigned node) const {
@@ -10,10 +11,32 @@ bool Requester::nodeIdle(unsigned node) const {
     for (const auto& [key, value] : snoopAddresses) if (key.node == node) return false;
     return true;
 }
+unsigned Requester::outstanding(unsigned node) const {
+    std::set<RequestKey> keys;
+    for (const auto& r : requests) if (r.node == node) keys.insert({r.node, r.txn});
+    for (const auto& r : events) if (r.node == node) keys.insert({r.node, r.txn});
+    for (const auto& [k, value] : progress) if (k.node == node) keys.insert(k);
+    for (const auto& [k, value] : controls) if (k.node == node) keys.insert(k);
+    return keys.size();
+}
+bool Requester::lineIdle(uint64_t address) const {
+    const auto line = address & ~uint64_t(63);
+    for (const auto& r : requests) if ((r.address & ~uint64_t(63)) == line) return false;
+    for (const auto& r : events) if ((r.address & ~uint64_t(63)) == line) return false;
+    for (const auto& [k, r] : progress) if ((r.flit.address & ~uint64_t(63)) == line) return false;
+    for (const auto& [k, r] : controls) if ((r.action.address & ~uint64_t(63)) == line) return false;
+    for (const auto& [k, a] : snoopAddresses) if ((a & ~uint64_t(63)) == line) return false;
+    return true;
+}
 bool Requester::ready(unsigned node, const TestAction& action) {
     const bool persistent = action.kind == TestActionKind::AcquireShared || action.kind == TestActionKind::AcquireUnique ||
         action.kind == TestActionKind::MakeUnique;
-    if (!requestReady() || !nodeIdle(node)) return false;
+    if (!requestReady() || (perNodeLimit == 1 ? !nodeIdle(node) : outstanding(node) >= perNodeLimit)) return false;
+    if (!lineIdle(action.address)) return false;
+    const RequestKey key{node, action.txn};
+    if (progress.count(key) || controls.count(key)) return false;
+    for (const auto& r : requests) if (r.node == node && r.txn == action.txn) return false;
+    for (const auto& r : events) if (r.node == node && r.txn == action.txn) return false;
     const bool device = action.kind == TestActionKind::ReadNoSnp || action.kind == TestActionKind::WriteNoSnp;
     if (!device && !board.canIssue(node, action.address, persistent)) return false;
     for (const auto& request : requests) if ((request.address & ~uint64_t(63)) == (action.address & ~uint64_t(63))) return false;

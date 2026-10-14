@@ -62,6 +62,7 @@ class EbHome {
         bool retryPending = false, retryDelivered = false, homeMemoryOnly = false;
         bool control = false, device = false;
         unsigned dataMask = 3;
+        unsigned acquisitionOwner = 0;
         uint64_t byteMask = ~uint64_t(0);
         chi_agent::Line expected{}, received{};
     };
@@ -89,6 +90,7 @@ class EbHome {
     static bool isWrite(unsigned opcode);
     static void require(bool value, const char* message);
     void finish(unsigned owner);
+    void retireRequest(unsigned owner);
     void enqueueCompletion(unsigned owner);
     void start(unsigned owner);
 public:
@@ -111,6 +113,11 @@ public:
     void receiveCopyback(const EbData& flit);
     bool snoopCommitReady() const { return contexts.size() < capacity && memory.ready(true); }
     void commitSnoopData(uint64_t address, const chi_agent::Line& data);
+    bool snoopCommitComplete(uint64_t address) const {
+        for (const auto& [id,ctx] : contexts)
+            if (ctx.homeMemoryOnly && ctx.request.address == address) return false;
+        return true;
+    }
     std::map<uint64_t, chi_agent::Line> terminalDevices() const {
         require(idle(), "Home terminal observation preceded drain");
         return deviceMemory;

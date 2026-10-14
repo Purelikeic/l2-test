@@ -97,11 +97,11 @@ int main() {
 
         compactchi::HomePlan eviction;
         eviction.responseTraceTag = true;
+        // Acquisition precedes its victim generation; their DBIDs remain independent.
+        home.accept({1, 8, 9, 7, 0x1000, true});
         home.accept({1, 8, 9, 0x42, 0x1040}, eviction);
         const auto release = home.response();
         home.responseAccepted();
-        // Same MSHR TxnID, different acquisition and victim release obligations.
-        home.accept({1, 8, 9, 7, 0x1000, true});
         reject([&] { home.receiveCompAck(1, 8, release.dbid, true); });
         waitData();
         const auto readDbid = home.datum().dbid;
@@ -254,6 +254,20 @@ int main() {
         drainMemory();
         for (unsigned i = 0; i < 64; ++i)
             require(memory.backend().access(0x1040 + i) == dirty[i], "Home Snoop responsibility did not reach memory");
+        home.accept({1,8,31,38,0x1000,true});
+        reject([&] { home.accept({1,8,31,38,0x1040,false}); });
+        waitData();
+        const auto oldReadDbid = home.datum().dbid;
+        home.dataAccepted(); home.dataAccepted();
+        home.accept({1,8,31,38,0x1040,false}); // Old CompAck is still pending.
+        home.receiveCompAck(1,8,oldReadDbid,true);
+        reject([&] { home.accept({1,8,31,38,0x1000,false}); }); // Old retirement must not remove new owner.
+        waitData();
+        const auto newReadDbid = home.datum().dbid;
+        require(oldReadDbid != newReadDbid,"reused request inherited a live completion DBID");
+        home.dataAccepted(); home.dataAccepted();
+        home.receiveCompAck(1,8,newReadDbid,false);
+        require(home.idle(),"request generations leaked DBID obligations");
         ctx.cfg.mmioEnable = true;
         ctx.cfg.mmioStart = 0x4000; ctx.cfg.mmioEnd = 0x5000;
         home.setDeviceOracle([&](uint64_t) { return std::make_pair(initial, uint64_t(0xff)); });

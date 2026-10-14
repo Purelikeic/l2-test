@@ -16,6 +16,7 @@ public:
         if (descriptor.id >= 128) throw std::invalid_argument("configured node ID exceeds Compact source width");
     }
     bool idle() const override { return requester.nodeIdle(descriptor.id); }
+    bool lineIdle(uint64_t address) const override { return requester.lineIdle(address); }
     TestActionResult act(const TestAction& action) override {
         const auto kind = action.kind;
         if (kind == TestActionKind::Exclusive || kind == TestActionKind::Atomic || kind == TestActionKind::WriteUnique)

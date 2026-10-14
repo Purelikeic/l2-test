@@ -41,11 +41,17 @@ def check(events):
     peak_lines = 0
 
     def finish(key, q, cycle, form):
+        q["finished"] = True
         completed.append(dict(node=q["request"]["node"], txn=q["request"]["txn_id"],
                               opcode=q["request"]["opcode"], address=q["request"]["address"],
                               role=key[2], requestCycle=q["request"]["cycle"], completionCycle=cycle,
                               form=form, retried=q["retry"] is not None))
-        del active[key]
+        if active.get(key) is q: del active[key]
+
+    def request_complete(q):
+        if q["request"]["opcode"] in READ:
+            return q["beats"] == need_beats(q) and (q["mode"] == "combined" or q["completion"] is not None)
+        return q["completion"] is not None or q["dbid"] is not None
 
     def need_beats(q):
         req = q["request"]
@@ -62,8 +68,8 @@ def check(events):
             if q["completion"] is None: return
             completion = q["completion"]; target = completion["node"]; tag = completion["trace_tag"]
         ack = q["request"]["node"], target, completion["dbid"]
-        assert ack not in ack_dbids or ack_dbids[ack][0] == key, "aliased live completion DBID"
-        ack_dbids[ack] = key, tag
+        assert ack not in ack_dbids or ack_dbids[ack][2] is q, "aliased live completion DBID"
+        ack_dbids[ack] = key, tag, q
 
     # Inputs captured in a cycle are simultaneous. In particular a split write
     # Comp and its final DAT may fire together, despite channel print order.
@@ -89,7 +95,7 @@ def check(events):
             if op not in DEVICE:
                 assert r["size"] == 6 and r["address"] % 64 == 0 and r["mem_attr"] & 4 and r["order"] == 0 and not r["ns"]
             key = r["node"], r["txn_id"], family
-            if key in active:
+            if key in active and not r["allow_retry"]:
                 q = active[key]
                 retry = q["retry"]
                 assert retry is not None and not q["reissued"] and not r["allow_retry"]
@@ -105,9 +111,12 @@ def check(events):
                                     creditCycle=credit["cycle"], reissueCycle=r["cycle"],
                                     earlyCredit=credit["cycle"] < retry["cycle"]))
             else:
+                if key in active:
+                    assert request_complete(active[key]), "request TxnID reused before completion delivery"
                 assert r["p_crd_type"] == 0 and r["allow_retry"] == (op not in DEVICE), "invalid initial retry contract"
+                acquisition = active.get((r["node"], r["txn_id"], "read")) if family == "write" else None
                 active[key] = dict(request=r, retry=None, reissued=False, completion=None, dbid=None,
-                                   mode=None, beats=set(), data=None, data_tag=False, ack=r["exp_comp_ack"])
+                                   mode=None, beats=set(), data=None, data_tag=False, ack=r["exp_comp_ack"], acquisition=acquisition)
         elif direction == "chi_rx_rsp":
             assert r["resp_err"] == 0 and 0 <= r["p_crd_type"] < 16
             if op == 7:
@@ -141,7 +150,7 @@ def check(events):
                 q["ack"] = False # WriteEvictOrEvict DBID branch cancels its CompAck.
                 dbid = r["target"], r["node"], r["dbid"]
                 assert dbid not in data_dbids
-                data_dbids[dbid] = key
+                data_dbids[dbid] = key, q
             else:
                 assert key[2] == "control" or q["request"]["opcode"] in (13, 28, 29, 66)
                 q["completion"] = r
@@ -175,15 +184,15 @@ def check(events):
         elif direction == "chi_tx_rsp" and op == 2:
             ack = r["node"], r["target"], r["txn_id"]
             assert ack in ack_dbids, "CompAck preceded completion or used the wrong route/DBID"
-            key, tag = ack_dbids.pop(ack); q = active[key]
+            key, tag, q = ack_dbids.pop(ack)
             assert r["trace_tag"] == tag and r["resp_err"] == 0
             if key[2] == "write":
-                assert not any(k[:2] == key[:2] and k[2] != "write" for k in active), "victim CompAck preceded acquisition CompAck"
+                assert q["acquisition"] is None or q["acquisition"].get("finished", False), "victim CompAck preceded acquisition CompAck"
             finish(key, q, r["cycle"], q["mode"])
         elif direction == "chi_tx_dat" and op in (2, 3):
             dbid = r["node"], r["target"], r["txn_id"]
             assert dbid in data_dbids, "write data preceded DBID or changed its route"
-            key = data_dbids[dbid]; q = active[key]
+            key, q = data_dbids[dbid]
             assert op == (3 if q["request"]["opcode"] in DEVICE else 2)
             assert r["trace_tag"] == q["dbid"]["trace_tag"] and r["resp_err"] == 0
             assert r["data_id"] in need_beats(q) and r["data_id"] not in q["beats"]

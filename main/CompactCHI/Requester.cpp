@@ -12,9 +12,9 @@ ReadClass Requester::readClass(unsigned opcode) {
     if (opcode == 16) return ReadClass::Unique;
     throw std::invalid_argument("requester read profile does not support this opcode");
 }
-Requester::Requester(ArchitecturalBoard& board, unsigned l2Node, size_t capacity)
-    : board(board), l2Node(l2Node), capacity(capacity) {
-    require(capacity != 0, "requester needs bounded queue capacity");
+Requester::Requester(ArchitecturalBoard& board, unsigned l2Node, size_t capacity, unsigned perNodeLimit)
+    : board(board), l2Node(l2Node), capacity(capacity), perNodeLimit(perNodeLimit) {
+    require(capacity != 0 && perNodeLimit > 0 && perNodeLimit <= 256, "requester needs bounded queue capacity");
 }
 bool Requester::requestReady() const { return requests.size() + events.size() + progress.size() + controls.size() < capacity; }
 void Requester::enqueue(const RequestFlit& request) {
@@ -107,12 +107,16 @@ void Requester::responseAccepted() {
     responses.pop_front();
 }
 bool Requester::snoopReady() const {
-    for (const auto& [key, c] : controls)
-        if (c.accepted && c.action.kind == TestActionKind::WriteBack && !c.dbidReceived) return false;
+    if (perNodeLimit == 1) {
+        for (const auto& [key, c] : controls)
+            if (c.accepted && c.action.kind == TestActionKind::WriteBack && !c.dbidReceived) return false;
+    }
     return snoopAddresses.size() < capacity;
 }
 void Requester::receiveSnoop(const SnoopFlit& snoop) {
-    require(snoopReady(), "requester Snoop capacity exceeded");
+    // The caller sampled ready before simultaneous REQ/EVT handshakes.
+    // Recomputing the global WBF gate here would use next-cycle state.
+    require(snoopAddresses.size() < capacity, "requester Snoop capacity exceeded");
     require(snoop.node == l2Node && snoop.opcode < 4 && !(snoop.address & 63),
             "invalid Compact Snoop route, opcode or address");
     require(nodeKinds.empty() || (snoop.target < nodeKinds.size() && nodeKinds[snoop.target] == TestNodeKind::Coherent),

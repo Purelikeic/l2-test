@@ -41,6 +41,7 @@ class Requester {
     unsigned l2Node;
     std::vector<TestNodeKind> nodeKinds;
     size_t capacity;
+    unsigned perNodeLimit;
     std::deque<RequestFlit> requests;
     std::deque<OutResponse> responses;
     std::deque<OutData> dataResponses;
@@ -54,7 +55,9 @@ class Requester {
     static ReadClass readClass(unsigned opcode);
     static void require(bool value, const char* message);
 public:
-    Requester(ArchitecturalBoard& board, unsigned l2Node, size_t capacity = 16);
+    Requester(ArchitecturalBoard& board, unsigned l2Node, size_t capacity = 16, unsigned perNodeLimit = 1);
+    bool lineIdle(uint64_t address) const;
+    unsigned outstanding(unsigned node) const;
     void configureNodes(const std::vector<TestNodeDescriptor>& nodes) {
         nodeKinds.clear();
         for (const auto& node : nodes) {

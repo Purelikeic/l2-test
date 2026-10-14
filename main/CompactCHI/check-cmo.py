@@ -104,7 +104,11 @@ def mutations(root, events, profile):
         row[field] = value; variants.append((changed, actions))
     # Remove one beat from a data-returning nested Snoop; a single beat must
     # never satisfy the obligation even though the final requester is clean.
+    nested_ids = {(r["target"],r["txn_id"]) for r in events if r["handshake"] and
+                  r["direction"] == "cchi_tx_snp" and r["address"] == first["address"] and
+                  first["requestCycle"] < r["cycle"] < first["compCMOCycle"]}
     nested_data = [r for r in events if r["handshake"] and r["direction"] == "cchi_rx_dat" and r["opcode"] == 3 and
+                   (r["node"],r["txn_id"]) in nested_ids and
                    first["requestCycle"] < r["cycle"] < first["compCMOCycle"]]
     if nested_data:
         victim = nested_data[-1]

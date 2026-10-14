@@ -87,6 +87,11 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
     const unsigned ackTarget = !write && !control && !device && plan.separated && plan.completionSource ?
         plan.completionSource : node;
     Context ctx{req, plan, dbid, ackTarget, write, copyback, ack};
+    if (write) {
+        for (const auto& [id, read] : contexts)
+            if (!read.write && !read.control && !read.device && read.request.source == req.source &&
+                read.request.txn == req.txn) ctx.acquisitionOwner = std::max(ctx.acquisitionOwner, id);
+    }
     ctx.control = control; ctx.device = device;
     if (device) {
         ctx.dataMask = req.size == 6 ? 3 : 1U << ((req.address >> 5) & 1);
@@ -146,10 +151,22 @@ void EbHome::enqueueCompletion(unsigned owner) {
     responses.push_back({{ctx.ackTarget, ctx.request.source, ctx.request.txn, 0x0b,
                           ctx.dbid, ctx.request.opcode == 7 ? 2U : 1U, ctx.plan.responseTraceTag}, owner});
 }
+void EbHome::retireRequest(unsigned owner) {
+    const auto& ctx = contexts.at(owner);
+    if (ctx.device || ctx.homeMemoryOnly || ctx.retryPending) return;
+    const bool delivered = ctx.write || ctx.control ? ctx.rspAccepted :
+        ctx.sentMask == 3 && (!ctx.plan.separated || ctx.rspAccepted);
+    if (!delivered) return;
+    const auto key = std::make_tuple(ctx.request.source, ctx.request.txn, ctx.write);
+    const auto it = transactions.find(key);
+    if (it != transactions.end() && it->second == owner) transactions.erase(it);
+}
 void EbHome::finish(unsigned owner) {
     const auto& ctx = contexts.at(owner);
     if (!ctx.homeMemoryOnly) {
-        transactions.erase({ctx.request.source, ctx.request.txn, ctx.write});
+        const auto key = std::make_tuple(ctx.request.source, ctx.request.txn, ctx.write);
+        const auto it = transactions.find(key);
+        if (it != transactions.end() && it->second == owner) transactions.erase(it);
         dbids.erase(ctx.dbid);
     }
     contexts.erase(owner);
@@ -212,6 +229,7 @@ void EbHome::responseAccepted() {
     ctx.rspAccepted = true;
     const bool retire = (ctx.write || ctx.control) && !ctx.copyback && !ctx.needAck && !ctx.device;
     responses.pop_front();
+    retireRequest(item.owner);
     if (retire) finish(item.owner);
 }
 void EbHome::dataAccepted() {
@@ -224,6 +242,7 @@ void EbHome::dataAccepted() {
     if (ctx.sentMask == 3 && ctx.plan.separated && ctx.plan.completionAfterData) enqueueCompletion(item.owner);
     const bool deviceDone = ctx.device && ctx.sentMask == ctx.dataMask;
     data.pop_front();
+    retireRequest(item.owner);
     if (deviceDone) finish(item.owner);
 }
 void EbHome::receiveCompAck(unsigned source, unsigned target, unsigned dbid, bool traceTag) {
@@ -242,7 +261,7 @@ void EbHome::receiveCompAck(unsigned source, unsigned target, unsigned dbid, boo
         require(traceTag == expectedTag, "read CompAck TraceTag differs from the CPL2 completion context");
     } else {
         require(ctx.rspAccepted, "write CompAck preceded Comp");
-        require(!transactions.count({ctx.request.source, ctx.request.txn, false}),
+        require(!ctx.acquisitionOwner || !contexts.count(ctx.acquisitionOwner),
                 "CPL2 victim CompAck preceded its live acquisition CompAck");
         require(traceTag == ctx.plan.responseTraceTag, "write CompAck did not use Comp TraceTag");
     }

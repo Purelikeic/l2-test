@@ -32,6 +32,7 @@ public:
     virtual ~TestNode() = default;
     virtual TestActionResult act(const TestAction& action) = 0;
     virtual bool idle() const = 0;
+    virtual bool lineIdle(uint64_t) const { return idle(); }
 };
 inline std::vector<TestNodeDescriptor> TestNodeLayout(const TLLocalConfig& config) {
     const uint64_t cache = uint64_t(config.coreCount) *
