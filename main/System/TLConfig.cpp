@@ -139,6 +139,9 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
     INI_OVERRIDE_INT("tltest.fuzzer", "ari.target",                 tlcfg.fuzzARITarget);
     INI_OVERRIDE_INT("tltest.fuzzer", "random.episodes",            tlcfg.randomActionEpisodes);
     INI_OVERRIDE_INT("tltest.fuzzer", "random.lines",               tlcfg.randomActionLines);
+    INI_OVERRIDE_INT("tltest.stress", "cycles",                    tlcfg.stress.cycles);
+    INI_OVERRIDE_INT("tltest.stress", "lanes",                     tlcfg.stress.lanes);
+    INI_OVERRIDE_INT("tltest.stress", "outstanding",               tlcfg.stress.outstanding);
     INI_OVERRIDE_INT("tltest.fuzzer", "stream.interval",            tlcfg.fuzzStreamInterval);
     INI_OVERRIDE_INT("tltest.fuzzer", "stream.step",                tlcfg.fuzzStreamStep);
     INI_OVERRIDE_INT("tltest.fuzzer", "stream.start",               tlcfg.fuzzStreamStart);
@@ -156,6 +159,17 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
     INI_OVERRIDE_INT("tltest.fuzzer", "unified.anvil.noise",        tlcfg.unifiedSequenceModeAnvil.noise);
 
 #   undef INI_OVERRIDE_INT
+
+    {
+        auto section = ini["tltest.stress"];
+        if (section.isKeyExist("pattern")) {
+            const auto pattern = section.toString("pattern");
+            if (pattern == "stream") tlcfg.stress.pattern = 0;
+            else if (pattern == "same-set") tlcfg.stress.pattern = 1;
+            else if (pattern == "mixed") tlcfg.stress.pattern = 2;
+            else throw std::invalid_argument("unknown stress pattern");
+        }
+    }
 
     // read sequence mode configurations
     {

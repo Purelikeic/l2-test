@@ -8,7 +8,7 @@ def check(root, events, profile):
     path = root / "forward.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
     dct = [r for r in events if r["handshake"] and r["direction"] == "chi_tx_dat" and r["target"] == 12 and r["opcode"] == 4]
-    if profile != "lower-snoop":
+    if profile not in ("lower-snoop", "stress") or (profile == "stress" and not rows and not dct):
         assert not rows and not dct, "non-lower profile created a forward endpoint obligation"
         return dict(observations=0, dctBeats=0, delayedAcks=0, mutationRejections=0,
                     scope="no external forward obligation in this profile")
@@ -35,7 +35,8 @@ def check(root, events, profile):
 
 
 def mutations(root, events, profile):
-    if profile != "lower-snoop": return 0
+    if profile not in ("lower-snoop", "stress"): return 0
+    if profile == "stress" and not (root / "forward.jsonl").read_text().splitlines(): return 0
     original = [json.loads(line) for line in (root / "forward.jsonl").read_text().splitlines()]
     rejected = 0
     variants = []

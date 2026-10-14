@@ -11,7 +11,7 @@ lower_profile = sys.argv[2:] == ["lower-snoop"]
 victim_profile = sys.argv[2:] == ["victim"]
 profile = sys.argv[2] if len(sys.argv) > 2 else "deterministic-read"
 if profile == "configured" and (root / "scenario.json").exists():
-    profile = {0: "configured", 1: "deterministic-read", 2: "random-read", 3: "lower-snoop", 4: "victim", 5: "node-actions", 6: "deterministic-read", 7: "random-actions", 8: "action-replay"}[json.loads((root / "scenario.json").read_text())]
+    profile = {0: "configured", 1: "deterministic-read", 2: "random-read", 3: "lower-snoop", 4: "victim", 5: "node-actions", 6: "deterministic-read", 7: "random-actions", 8: "action-replay", 9: "stress"}[json.loads((root / "scenario.json").read_text())]
 randomized, lower_profile, victim_profile = profile == "random-read", profile == "lower-snoop", profile == "victim"
 scopes = runpy.run_path(str(Path(__file__).with_name("profile_scopes.py")))["SCOPES"]
 rows = [json.loads(line) for line in (root / "canonical.jsonl").read_text().splitlines()]
@@ -36,7 +36,7 @@ prefetch_coverage = "--prefetch-training-coverage" in sys.argv[3:]
 prefetch_evidence = prefetch_tools["check"](prefetch_rows, events, prefetch_coverage, profile in ("random-actions", "action-replay"))
 prefetch_evidence["mutationRejections"] = prefetch_tools["mutations"](prefetch_rows, events, prefetch_coverage, profile in ("random-actions", "action-replay"))
 prefetch_by_time = {r["sim_time"]:r for r in prefetch_rows}
-if profile in ("node-actions", "configured", "random-actions", "action-replay"):
+if profile in ("node-actions", "configured", "random-actions", "action-replay", "stress"):
     expected_requests = sum(r["direction"] == "cchi_rx_req" and r["handshake"] for r in events)
     latency = {}
     victim_evidence = None
@@ -158,6 +158,10 @@ data_evidence = data_tools["check"](directory_rows, data_rows, resource_rows, ar
 data_evidence["mutationRejections"] = data_tools["mutations"](directory_rows, data_rows, resource_rows, architectural_evidence["l2DataVersions"], architectural_evidence["l2UndefinedStorage"], architectural_evidence["l2Transitions"])
 transition_tools = runpy.run_path(str(Path(__file__).with_name("check-transitions.py")))
 actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
+if profile == "stress":
+    pressure = runpy.run_path(str(Path(__file__).with_name("check-stress.py")))
+    node_evidence["stress"] = pressure["check"](root, events, actions, resource_rows)
+    node_evidence["stress"]["mutationRejections"] = pressure["mutations"](root, events, actions, resource_rows)
 if profile == "random-actions":
     node_evidence["randomActions"] = runpy.run_path(str(Path(__file__).with_name("check-random-actions.py")))["check"](root, actions, resource_rows)
 if profile == "action-replay":

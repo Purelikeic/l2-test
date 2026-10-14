@@ -38,7 +38,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     bool lowerProfile, victimProfile;
     compactchi::VictimProfile victim;
     unsigned lowerPhase = 0;
-    compactchi::LineData dirtyLine{};
+    compactchi::LineData dirtyLine{}, lowerDirtyLine{};
     std::unique_ptr<compactchi::CanonicalTrace> trace;
     std::unique_ptr<compactchi::ResourceMonitor> resources;
     std::unique_ptr<compactchi::DirectoryMonitor> directory;
@@ -60,6 +60,8 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
     std::ofstream stimulus, actions, rejections, prefetchEvidence;
     unsigned quiet = 0, downRequests = 0;
     bool successful = false;
+    bool upstreamDataOffered = false;
+    uint64_t upstreamDataAt = 0;
     std::filesystem::path output;
 
     compactchi::EbRequest downRequest() const {
@@ -138,9 +140,10 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
                 throw std::runtime_error("dirty lower Snoop responsibility mismatch");
             home->commitSnoopData(address, result.latest); lowerPhase = 2;
         }
-        if (lowerPhase != 2 || !home->idle()) return false;
+        if (lowerPhase != 2 || (scenario == TestScenario::Stress ?
+                !home->snoopCommitComplete(address) : !home->idle())) return false;
         for (unsigned i = 0; i < 64; ++i)
-            if (memory->backend().access(address + i) != dirtyLine[i]) throw std::runtime_error("dirty Snoop memory mismatch");
+            if (memory->backend().access(address + i) != lowerDirtyLine[i]) throw std::runtime_error("dirty Snoop memory mismatch");
         return true;
     }
     void lowerUniqueForward(uint64_t address) override {
@@ -159,7 +162,19 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
         if (!memory->backend().accessible(address) || !memory->backend().accessible(address + 63))
             throw std::invalid_argument("action/prefetch line outside configured memory");
         if (!initializedLines.insert(address).second) return;
-        const auto bytes = compactchi::VictimProfile::initial(address, cfg->seed);
+        auto bytes = compactchi::VictimProfile::initial(address, cfg->seed);
+        if (scenario == TestScenario::Stress) {
+            // All PA bits affect each byte; same-set/high-tag aliases must not
+            // accidentally return indistinguishable initial data in pressure tests.
+            for (unsigned i=0;i<64;++i) {
+                uint64_t x = (address >> 6) ^ (uint64_t(cfg->seed) << 32) ^
+                    (uint64_t(i+1) * 0x9e3779b97f4a7c15ULL);
+                x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+                x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+                x ^= x >> 33;
+                bytes[i] = uint8_t(x);
+            }
+        }
         for (unsigned i = 0; i < 64; ++i) memory->backend().access(address + i) = bytes[i];
         board->initialize(address, bytes);
     }
@@ -265,7 +280,11 @@ public:
         });
         fuzzer->onAction([this](const PlannedTestAction& planned) {
             const auto& a = planned.action;
-            if (a.kind == TestActionKind::Store) { dirtyLine = a.data; if (victimProfile) victim.dirtyStored = true; }
+            if (a.kind == TestActionKind::Store) {
+                dirtyLine = a.data;
+                if (a.address == cfg->memoryStart + 64) lowerDirtyLine = a.data;
+                if (victimProfile) victim.dirtyStored = true;
+            }
             actions << "{\"cycle\":" << cycle() << ",\"node\":" << planned.node << ",\"kind\":" << unsigned(a.kind)
                 << ",\"address\":" << a.address << ",\"txn\":" << a.txn << ",\"size\":" << a.size
                 << ",\"trace_tag\":" << (a.traceTag ? "true" : "false") << ",\"byte_enable\":" << a.byteEnable << ",\"data\":\"";
@@ -291,7 +310,9 @@ public:
         if (!prefetchEvidence) throw std::runtime_error("cannot open prefetch evidence");
         const auto layout = TestNodeLayout(config);
         board = std::make_unique<compactchi::ArchitecturalBoard>(*this, layout.size(), global, uncached);
-        requester = std::make_unique<compactchi::Requester>(*board, 1);
+        requester = std::make_unique<compactchi::Requester>(*board, 1,
+            scenario == TestScenario::Stress ? 256 : 16,
+            scenario == TestScenario::Stress ? config.stress.outstanding : 1);
         requester->configureNodes(layout);
         memory = std::make_unique<chi_agent::HomeMemory>(config, cycles, backend, memoryPort);
         home = std::make_unique<compactchi::EbHome>(*memory, *this, global);
@@ -423,7 +444,10 @@ public:
         }
         if (dut.io_evt_valid && dut.io_evt_ready) requester->eventAccepted();
         if (dut.io_upRspIn_valid && dut.io_upRspIn_ready) requester->responseAccepted();
-        if (dut.io_upDatIn_valid && dut.io_upDatIn_ready) requester->dataAccepted();
+        if (dut.io_upDatIn_valid && dut.io_upDatIn_ready) {
+            requester->dataAccepted();
+            upstreamDataOffered = false; upstreamDataAt = 0;
+        }
         if (dut.io_downRsp_valid && dut.io_downRsp_ready) home->responseAccepted();
         if (dut.io_downDat_valid && dut.io_downDat_ready) home->dataAccepted();
         if (dut.io_upDat_valid && dut.io_upDat_ready) {
@@ -515,7 +539,12 @@ public:
             dut.io_downSnp_bits_fwdNID = snp.forwardNode; dut.io_downSnp_bits_fwdTxnID = snp.forwardTxn;
             dut.io_downSnp_bits_ns = 0;
         }
-        dut.io_upDatIn_valid = requester->dataValid();
+        if (scenario == TestScenario::Stress && cfg->stress.pattern == 2 && requester->dataValid() &&
+            requester->data().opcode == 2 && !upstreamDataOffered) {
+            if (!upstreamDataAt) upstreamDataAt = cycle() + 64;
+            upstreamDataOffered = cycle() >= upstreamDataAt;
+        } else if (requester->dataValid()) upstreamDataOffered = true;
+        dut.io_upDatIn_valid = requester->dataValid() && (scenario != TestScenario::Stress || upstreamDataOffered);
         if (requester->dataValid()) {
             const auto& f = requester->data();
             dut.io_upDatIn_bits_srcID = f.node; dut.io_upDatIn_bits_tgtID = f.target;
@@ -569,9 +598,19 @@ public:
         dut.io_upDat_ready = random() % 4 != 0; dut.io_upRsp_ready = random() % 4 != 0;
         dut.io_upSnp_ready = requester->snoopReady(); dut.io_downTxRsp_ready = random() % 4 != 0;
         dut.io_downTxDat_ready = random() % 4 != 0;
+        if (scenario == TestScenario::Stress) {
+            // Fixed finite stall windows guarantee exercise of held flits;
+            // each channel resumes independently so progress is always possible.
+            dut.io_upDat_ready &= cycle() % 512 >= 256;
+            dut.io_upRsp_ready &= cycle() % 257 >= 48;
+            dut.io_upSnp_ready &= cycle() % 181 >= 24;
+            dut.io_downTxRsp_ready &= cycle() % 193 >= 24;
+            dut.io_downTxDat_ready &= cycle() % 211 >= 40;
+        }
         dut.io_downReq_ready = 0;
         dut.eval();
-        dut.io_downReq_ready = home->requestReady(downRequest());
+        dut.io_downReq_ready = home->requestReady(downRequest()) &&
+            (scenario != TestScenario::Stress || cycle() % 257 >= 32);
         dut.eval();
     }
     void finalize() override {
@@ -598,6 +637,7 @@ int main(int argc, char** argv) {
         else if (profile == "node-actions") scenario = TestScenario::Actions;
         else if (profile == "random-actions") scenario = TestScenario::RandomActions;
         else if (profile == "action-replay") scenario = TestScenario::ActionReplay;
+        else if (profile == "stress") scenario = TestScenario::Stress;
         else throw std::invalid_argument("unknown action fuzzer mode");
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);
@@ -639,9 +679,15 @@ int main(int argc, char** argv) {
         const bool passed = sequencer.IsFinished() && adapter.passed();
         sequencer.Finalize();
         dut.final(); waveform.close();
+        const bool finalPassed = passed && !sequencer.IsFailed();
+        std::ofstream result(output / "native-result.json");
+        result << "{\"state\":\"" << (finalPassed ? "finished" : "failed")
+               << "\",\"seed\":" << config.seed << ",\"cycle\":" << cycle
+               << ",\"stimulusComplete\":" << (passed ? "true" : "false")
+               << ",\"timeout\":" << (!passed && cycle >= limit ? "true" : "false") << "}\n";
         std::printf("profile=%s seed=%llu cycles=%llu independent_board=%s trace=%s\n",
-                    profile.c_str(), (unsigned long long)config.seed, (unsigned long long)cycle, passed ? "passed" : "failed", output.c_str());
-        return passed && !sequencer.IsFailed() ? 0 : 1;
+                    profile.c_str(), (unsigned long long)config.seed, (unsigned long long)cycle, finalPassed ? "passed" : "failed", output.c_str());
+        return finalPassed ? 0 : 1;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());
         return 2;

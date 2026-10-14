@@ -1,5 +1,6 @@
 """Evidence labels for the implemented limited DUT profiles, not global acceptance."""
 SCOPES = {
+    "stress": "sustained configurable endpoint traffic with per-node multiple outstanding, stream/same-set/mixed boundaries and final drain; current supported profile only",
     "deterministic-read": "limited serialized read/upgrade DUT profile with separated completion and Retry/P-Credit",
     "random-read": "limited serialized four-identity, two-line random read DUT profile",
     "action-replay": "serialized complete accepted action intent replay with original seed/configuration; no exact-cycle/global acceptance",

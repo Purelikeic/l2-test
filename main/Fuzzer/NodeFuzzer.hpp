@@ -5,7 +5,8 @@
 #include <functional>
 #include <optional>
 
-enum class TestScenario { Configured, DeterministicRead, RandomRead, LowerSnoop, Victim, Actions, Replay, RandomActions, ActionReplay };
+enum class TestScenario { Configured, DeterministicRead, RandomRead, LowerSnoop, Victim, Actions, Replay, RandomActions, ActionReplay, Stress };
+class StressScheduler;
 struct PlannedTestAction { unsigned node; TestAction action; };
 class TestScenarioHooks {
 public:
@@ -24,6 +25,7 @@ class NodeFuzzer : public Fuzzer {
     std::vector<unsigned> coherent, transient, mmio;
     TestScenarioHooks& hooks;
     TestScenario scenario;
+    std::unique_ptr<StressScheduler> stress;
     std::mt19937 random;
     std::vector<PlannedTestAction> replay;
     unsigned issued = 0, phase = 0;
@@ -43,6 +45,7 @@ class NodeFuzzer : public Fuzzer {
 public:
     NodeFuzzer(const TLLocalConfig&, const std::vector<TestNode*>&, TestScenarioHooks&,
                TestScenario, std::vector<PlannedTestAction> replay = {});
+    ~NodeFuzzer() override;
     void tick() override;
     bool done() const;
     TestScenario getScenario() const { return scenario; }

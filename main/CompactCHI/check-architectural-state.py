@@ -4,10 +4,24 @@ import json
 from collections import defaultdict, deque
 
 
+def initial_data(address, seed, pressure=False):
+    if not pressure:
+        return bytes(((address >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
+    result = bytearray()
+    mask = (1 << 64) - 1
+    for i in range(64):
+        value = ((address >> 6) ^ (seed << 32) ^ (((i + 1) * 0x9e3779b97f4a7c15) & mask))
+        value = ((value ^ (value >> 33)) * 0xff51afd7ed558ccd) & mask
+        value = ((value ^ (value >> 33)) * 0xc4ceb9fe1a85ec53) & mask
+        result.append((value ^ (value >> 33)) & 255)
+    return bytes(result)
+
+
 def check(root, events, seed, topo, terminal=None):
     terminal = terminal if terminal is not None else json.loads((root / "architectural-state.json").read_text())
     assert terminal["schema"] == 1
     actions = [json.loads(line) for line in (root / "actions.jsonl").read_text().splitlines()]
+    pressure = (root / "scenario.json").exists() and json.loads((root / "scenario.json").read_text()) == 9
     latest, memory, devices, copies = {}, {}, {}, {}
     l2_data, down_reads, undefined_storage = {}, {}, set()
     transitions = defaultdict(list)
@@ -38,7 +52,7 @@ def check(root, events, seed, topo, terminal=None):
     def initialize(address):
         address &= ~63
         if address not in latest:
-            latest[address] = bytes(((address >> 6) ^ (i * 17) ^ seed) & 255 for i in range(64))
+            latest[address] = initial_data(address,seed,pressure)
             memory[address] = latest[address]
             transition("initial", address)
         return address

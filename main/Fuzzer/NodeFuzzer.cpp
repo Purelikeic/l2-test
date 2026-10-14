@@ -1,4 +1,5 @@
 #include "NodeFuzzer.hpp"
+#include "StressScheduler.hpp"
 #include <algorithm>
 
 NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& nodes,
@@ -61,9 +62,11 @@ NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& n
             cfg.cmoStart > cfg.memoryStart || cfg.cmoEnd < cfg.memoryStart + span)
             throw std::invalid_argument("random-actions requires bounded episodes/lines and enabled aligned memory/CMO/MMIO regions");
     }
+    if (scenario == TestScenario::Stress) stress = std::make_unique<StressScheduler>(cfg, nodes, hooks);
     if ((scenario == TestScenario::Replay || scenario == TestScenario::ActionReplay) && this->replay.empty())
         throw std::invalid_argument("empty action replay");
 }
+NodeFuzzer::~NodeFuzzer() = default;
 TestActionResult NodeFuzzer::submit(const PlannedTestAction& planned) {
     if (planned.node >= nodes.size()) throw std::invalid_argument("action selected an unconfigured node");
     const auto result = nodes[planned.node]->act(planned.action);
@@ -231,6 +234,7 @@ void NodeFuzzer::configured() {
     }
 }
 bool NodeFuzzer::done() const {
+    if (scenario == TestScenario::Stress) return stress->done(*cycles);
     if (scenario == TestScenario::RandomActions) return randomEpisode == cfg.randomActionEpisodes;
     if (scenario == TestScenario::Configured) {
         if (cfg.unifiedSequenceEnable) return cfg.unifiedSequenceMode == TLUnifiedSequenceMode::PASSIVE || anvilEpoch >= cfg.unifiedSequenceModeAnvil.epoch;
@@ -250,6 +254,14 @@ bool NodeFuzzer::done() const {
 }
 void NodeFuzzer::tick() {
     if (startupInterval < cfg.startupCycle) { ++startupInterval; return; }
+    if (scenario == TestScenario::Stress) {
+        stress->tick(*cycles, [this](const PlannedTestAction& a) {
+            const auto result = submit(a);
+            if (result == TestActionResult::Accepted) ++issued;
+            return result;
+        });
+        return;
+    }
     if (scenario == TestScenario::Configured) { if (!done()) configured(); return; }
     if (done() || !hooks.ready()) return;
     if (scenario == TestScenario::RandomActions) {

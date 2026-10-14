@@ -94,6 +94,13 @@ public:
     uint64_t            randomActionEpisodes;                   // Bounded protocol-neutral random action segments
     uint64_t            randomActionLines;                      // Working set for random action segments
 
+    struct {
+        uint64_t cycles = 20000;
+        unsigned lanes = 16;
+        unsigned outstanding = 16;
+        unsigned pattern = 0; // stream, same-set, mixed
+    } stress;
+
     uint64_t            fuzzStreamInterval;                     // Fuzz Stream interval
     uint64_t            fuzzStreamStep;                         // Fuzz Stream step
     uint64_t            fuzzStreamStart;                        // Fuzz Stream start address

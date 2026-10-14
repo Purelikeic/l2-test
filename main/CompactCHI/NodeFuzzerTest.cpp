@@ -40,6 +40,59 @@ static std::vector<PlannedTestAction> run(TLLocalConfig config, TestScenario sce
     }
     return accepted;
 }
+class DelayedNode : public TestNode {
+    const uint64_t& cycle;
+    std::map<uint64_t,uint64_t> live;
+public:
+    unsigned peak = 0;
+    explicit DelayedNode(TestNodeDescriptor descriptor, const uint64_t& cycle) : TestNode(descriptor), cycle(cycle) {}
+    bool idle() const override {
+        for (const auto& [a, deadline] : live) if (deadline > cycle) return false;
+        return true;
+    }
+    bool lineIdle(uint64_t address) const override {
+        const auto it = live.find(address & ~uint64_t(63));
+        return it == live.end() || it->second <= cycle;
+    }
+    TestActionResult act(const TestAction& a) override {
+        for (auto i=live.begin();i!=live.end();) if (i->second<=cycle) i=live.erase(i); else ++i;
+        if (live.size() >= 2 || !lineIdle(a.address)) return TestActionResult::Deferred;
+        live[a.address & ~uint64_t(63)] = cycle + 17;
+        peak = std::max(peak,unsigned(live.size()));
+        return TestActionResult::Accepted;
+    }
+};
+class PressureHooks : public TestScenarioHooks {
+public:
+    bool ready() const override { return false; } // A sustained scheduler must not wait for global ready.
+    void lowerShared(uint64_t) override {}
+    bool lowerSharedComplete() override { return true; }
+    void lowerUniqueForward(uint64_t) override {}
+    bool lowerForwardComplete() override { return true; }
+};
+static void stressVectors(TLLocalConfig config) {
+    config.memoryEnd = 0x2000000;
+    config.mmioStart = 0x2000000; config.mmioEnd = 0x2010000;
+    config.memoryEnable = config.mmioEnable = config.cmoEnable = true;
+    config.cmoEnableCBOClean = config.cmoEnableCBOFlush = config.cmoEnableCBOInval = true;
+    config.cmoStart = config.memoryStart; config.cmoEnd = config.memoryEnd;
+    config.stress.cycles = 200; config.stress.lanes = 4; config.stress.outstanding = 2;
+    for (unsigned pattern=0;pattern<3;++pattern) {
+        config.stress.pattern = pattern;
+        config.sequenceModes.clear();
+        if (pattern==1) config.sequenceModes[0]=TLSequenceMode::PASSIVE;
+        uint64_t cycle=0; PressureHooks hooks;
+        std::vector<std::unique_ptr<DelayedNode>> owned;
+        std::vector<TestNode*> views;
+        for (const auto d : TestNodeLayout(config)) { owned.push_back(std::make_unique<DelayedNode>(d,cycle)); views.push_back(owned.back().get()); }
+        NodeFuzzer fuzzer(config,views,hooks,TestScenario::Stress); fuzzer.set_cycles(&cycle);
+        unsigned accepted=0;
+        fuzzer.onAction([&](const auto&) { ++accepted; });
+        for (;cycle<1000 && !fuzzer.done();++cycle) { fuzzer.tick(); if (cycle<200) check(!fuzzer.done()); }
+        check(fuzzer.done() && accepted>50 && cycle>=200 && cycle<1000);
+        for (const auto& node : owned) check(node->peak == (pattern==1 && node->descriptor.id==0 ? 0 : 2));
+    }
+}
 int main(int argc, char** argv) {
     check(argc == 2);
     auto config = LoadTestConfig([](TLLocalConfig& c) {
@@ -48,6 +101,7 @@ int main(int argc, char** argv) {
         c.fuzzARIInterval = 10; c.fuzzARITarget = 1;
         c.fuzzStreamStart = 0x1000; c.fuzzStreamEnd = 0x10c0; c.fuzzStreamStep = 64; c.fuzzStreamInterval = 3;
     }, std::string(argv[1]) + "/absent-node-fuzzer.ini");
+    stressVectors(config);
     const auto deterministic = run(config, TestScenario::DeterministicRead, true);
     check(deterministic.size() == 4 && deterministic[0].node == 1 && deterministic[1].node == 0);
     auto first = run(config, TestScenario::RandomRead); auto second = run(config, TestScenario::RandomRead);
