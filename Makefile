@@ -1,4 +1,5 @@
 THREADS_BUILD 	?= 1
+LZ4_PREFIX 	?= $(shell brew --prefix lz4 2>/dev/null)
 
 CMAKE_CXX_COMPILER :=
 ifneq ($(origin CXX_COMPILER), undefined)
@@ -482,8 +483,10 @@ compactchi-resource-test:
 .PHONY: compactchi-build compactchi-test
 compactchi-build:
 	@mkdir -p $(COMPACTCHI_OBJ_DIR)
-	$(VERILATOR) --cc --exe --build --assert --trace -j $(THREADS_BUILD) --top-module L2Cache \
-		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal -CFLAGS "-std=c++20" \
+	$(VERILATOR) --cc --exe --build --assert --trace-fst -j $(THREADS_BUILD) --top-module L2Cache \
+		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal \
+		-CFLAGS "-std=c++20 -I$(LZ4_PREFIX)/include" \
+		-LDFLAGS "-L$(LZ4_PREFIX)/lib -llz4" \
 		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp \
 		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/RequesterActions.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
 		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/CompactCHI/EbHomeDevice.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \
