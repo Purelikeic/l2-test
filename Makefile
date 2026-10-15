@@ -287,6 +287,9 @@ DUT_SV ?= $(abspath ../build/L2Cache.sv)
 COMPACTCHI_OBJ_DIR ?= $(abspath ../build/compactchi-native-obj)
 COMPACTCHI_SEEDS ?= 42 7 12345 17 9999
 COMPACTCHI_CHECK_DIR ?= $(abspath ../build/compactchi-foundation)
+COMPACTCHI_CONFIG ?= $(abspath ./main/CompactCHI/config/cchitest.ini)
+COMPACTCHI_PROFILE ?= configured
+COMPACTCHI_OUTPUT_DIR ?= $(abspath ../build/compactchi-run)
 
 # Host-only checks of reused tester components; no RTL or nested DUT build.
 .PHONY: compactchi-memory-test
@@ -481,6 +484,15 @@ compactchi-resource-test:
 	$(COMPACTCHI_CHECK_DIR)/resource-monitor-test $(COMPACTCHI_CHECK_DIR)
 
 .PHONY: compactchi-build compactchi-test
+compactchi-test: compactchi-build
+	@rm -rf $(COMPACTCHI_OUTPUT_DIR)
+	@mkdir -p $(COMPACTCHI_OUTPUT_DIR)
+	@for seed in $(COMPACTCHI_SEEDS); do \
+		echo "[compactchi] seed=$$seed profile=$(COMPACTCHI_PROFILE)"; \
+		$(COMPACTCHI_OBJ_DIR)/VL2Cache $$seed $(COMPACTCHI_OUTPUT_DIR) $(COMPACTCHI_PROFILE) - - $(COMPACTCHI_CONFIG) || exit $$?; \
+	done
+	@printf '\033[1;32mCOMPACT CHI TEST PASS\033[0m\n'
+
 compactchi-build:
 	@mkdir -p $(COMPACTCHI_OBJ_DIR)
 	$(VERILATOR) --cc --exe --build --assert --trace-fst -j $(THREADS_BUILD) --top-module L2Cache \
@@ -496,8 +508,3 @@ compactchi-build:
 		$(CURDIR)/main/System/TLConfig.cpp \
 		$(wildcard $(CURDIR)/main/Base/*.cpp $(CURDIR)/main/Events/*.cpp \
 		$(CURDIR)/main/TLAgent/*.cpp $(CURDIR)/main/Fuzzer/*.cpp)
-
-compactchi-test: compactchi-build
-	@for seed in $(COMPACTCHI_SEEDS); do \
-		$(COMPACTCHI_OBJ_DIR)/VL2Cache $$seed || exit $$?; \
-	done
