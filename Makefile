@@ -498,7 +498,7 @@ compactchi-build:
 	$(VERILATOR) --cc --exe --build --assert --trace-fst -j $(THREADS_BUILD) --top-module L2Cache \
 		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal \
 		-CFLAGS "-std=c++20 -I$(LZ4_PREFIX)/include" \
-		-LDFLAGS "-L$(LZ4_PREFIX)/lib -llz4" \
+		-LDFLAGS "-L$(LZ4_PREFIX)/lib" \
 		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp \
 		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/RequesterActions.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
 		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/CompactCHI/EbHomeDevice.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \

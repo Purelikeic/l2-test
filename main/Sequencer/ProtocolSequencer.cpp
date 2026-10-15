@@ -90,6 +90,15 @@ void TLSequencer::FinalizeProtocol() noexcept {
     delete globalBoard; globalBoard = nullptr;
     delete uncachedBoard; uncachedBoard = nullptr;
     protocol = nullptr;
+    if (state == State::FINISHED) {
+        LogFinal(cycles, Append("\"\033[1;32m                                                           \033[0m\"").EndLine());
+        LogFinal(cycles, Append("\"\033[1;32m ███████ ██ ███   ██ ██ ███████ ██   ██ ███████ ██████  ██ \033[0m\"").EndLine());
+        LogFinal(cycles, Append("\"\033[1;32m ██      ██ ████  ██ ██ ██      ██   ██ ██      ██   ██ ██ \033[0m\"").EndLine());
+        LogFinal(cycles, Append("\"\033[1;32m █████   ██ ██ ██ ██ ██ ███████ ███████ █████   ██   ██ ██ \033[0m\"").EndLine());
+        LogFinal(cycles, Append("\"\033[1;32m ██      ██ ██  ████ ██      ██ ██   ██ ██      ██   ██    \033[0m\"").EndLine());
+        LogFinal(cycles, Append("\"\033[1;32m ██      ██ ██   ███ ██ ███████ ██   ██ ███████ ██████  ██ \033[0m\"").EndLine());
+        LogFinal(cycles, Append("\"\033[1;32m                                                           \033[0m\"").EndLine());
+    }
     // Preserve failure for the simulator's exit decision; successful lifecycle
     // returns to the existing NOT_INITIALIZED state.
     if (state != State::FAILED) state = State::NOT_INITIALIZED;
