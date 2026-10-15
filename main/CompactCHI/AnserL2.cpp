@@ -643,8 +643,8 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(output);
         const std::string ini = argc > 6 ? argv[6] : "cchitest.ini";
         auto config = LoadTestConfig([&](TLLocalConfig& config) { config.seed = seed; }, ini);
-        std::printf("[compactchi] config seed=%u core=%u tl_c=%u tl_ul=%u memory=0x%llx..0x%llx mmio=0x%llx..0x%llx cmo=%u\\n",
-                    config.seed, config.coreCount, config.masterCountPerCoreTLC, config.masterCountPerCoreTLUL,
+        std::printf("[compactchi] config seed=%llu core=%u tl_c=%u tl_ul=%u memory=0x%llx..0x%llx mmio=0x%llx..0x%llx cmo=%u\\n",
+                    (unsigned long long)config.seed, config.coreCount, config.masterCountPerCoreTLC, config.masterCountPerCoreTLUL,
                     (unsigned long long)config.memoryStart, (unsigned long long)config.memoryEnd,
                     (unsigned long long)config.mmioStart, (unsigned long long)config.mmioEnd,
                     config.cmoEnable);
