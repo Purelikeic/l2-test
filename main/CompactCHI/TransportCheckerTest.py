@@ -115,7 +115,7 @@ def sample(cycle, direction, node, target, txn, opcode, **fields):
 # Split MMIO response orders already supported by MMIOBridge, without adding
 # them to EbHome's production stimulus. DBID and Comp remain separate obligations.
 for order in ("comp-before-dbid", "data-before-comp", "comp-with-final-data"):
-    req = sample(1,"chi_tx_req",1,8,2048,28,address=0x40008,allow_retry=False,
+    req = sample(1,"chi_tx_req",1,8,2048,28,address=0x40008,allow_retry=True,
                  exp_comp_ack=False,size=3,mem_attr=0,order=0,ns=False,likely_shared=False)
     dbid = sample(3 if order == "comp-before-dbid" else 2,"chi_rx_rsp",8,1,2048,6,dbid=303,trace_tag=True)
     dat = sample(4 if order == "comp-before-dbid" else 3,"chi_tx_dat",1,8,303,3,
@@ -130,7 +130,7 @@ for order in ("comp-before-dbid", "data-before-comp", "comp-with-final-data"):
     try: checker["check"](bad)
     except AssertionError: rejected += 1
     else: raise AssertionError("MMIO DAT used Comp DBID instead of DBIDResp")
-req = sample(1,"chi_tx_req",1,8,2048,4,address=0x40020,allow_retry=False,
+req = sample(1,"chi_tx_req",1,8,2048,4,address=0x40020,allow_retry=True,
              exp_comp_ack=False,size=3,mem_attr=0,order=0,ns=False,likely_shared=False)
 dat = sample(2,"chi_rx_dat",8,1,2048,11,dbid=101,home_node=8,data_id=2,data="00"*32,trace_tag=True)
 rsp = sample(3,"chi_rx_rsp",14,1,2048,11,dbid=202)
@@ -138,7 +138,26 @@ checker["check"]([req,dat,rsp])
 accepted_variants.append(dict(case="mmio-split-read",variant="upper-beat-before-rsp"))
 try: checker["check"]([req,sample(2,"chi_rx_rsp",8,1,2048,3,p_crd_type=3),dat,rsp])
 except AssertionError: rejected += 1
-else: raise AssertionError("MMIO Retry was accepted despite the no-retry contract")
+else: raise AssertionError("MMIO completion was accepted before its credited reissue")
+credit = sample(2,"chi_rx_rsp",8,1,4095,7,p_crd_type=3)
+retry = sample(3,"chi_rx_rsp",8,1,2048,3,p_crd_type=3)
+reissue = copy.deepcopy(req)
+reissue.update(cycle=4,sim_time=8,allow_retry=False,p_crd_type=3)
+retry_data = copy.deepcopy(dat)
+retry_data.update(cycle=5,sim_time=10)
+retry_completion = copy.deepcopy(rsp)
+retry_completion.update(cycle=6,sim_time=12)
+retry_rows = [req,credit,retry,reissue,retry_data,retry_completion]
+evidence = checker["check"](retry_rows)
+assert evidence["retries"] == 1 and evidence["earlyCreditReissues"] == 1
+accepted_variants.append(dict(case="mmio-split-read",variant="early-credit-reissue"))
+for bad in (
+    [r for r in retry_rows if r is not credit],
+    [dict(r,p_crd_type=4) if r is credit else r for r in retry_rows],
+    [dict(r,opcode=38) if r is reissue else r for r in retry_rows]):
+    try: checker["check"](bad)
+    except AssertionError: rejected += 1
+    else: raise AssertionError("MMIO reissue escaped credit or original-identity checks")
 
 state = dict(state="passed", endpointCases=len(results), traceVariants=len(accepted_variants),
              mutationRejections=rejected, results=results, acceptedVariants=accepted_variants,

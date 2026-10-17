@@ -113,7 +113,7 @@ def check(events):
             else:
                 if key in active:
                     assert request_complete(active[key]), "request TxnID reused before completion delivery"
-                assert r["p_crd_type"] == 0 and r["allow_retry"] == (op not in DEVICE), "invalid initial retry contract"
+                assert r["p_crd_type"] == 0 and r["allow_retry"], "invalid initial retry contract"
                 acquisition = active.get((r["node"], r["txn_id"], "read")) if family == "write" else None
                 active[key] = dict(request=r, retry=None, reissued=False, completion=None, dbid=None,
                                    mode=None, beats=set(), data=None, data_tag=False, ack=r["exp_comp_ack"], acquisition=acquisition)
@@ -127,7 +127,7 @@ def check(events):
             candidates = []
             for key, q in active.items():
                 if key[:2] != (r["target"], r["txn_id"]): continue
-                if op == 3 and q["request"]["opcode"] not in DEVICE and q["retry"] is None and q["completion"] is None and not q["beats"] and q["dbid"] is None:
+                if op == 3 and q["retry"] is None and q["completion"] is None and not q["beats"] and q["dbid"] is None:
                     candidates.append((key, q))
                 elif op == 11 and key[2] == "read" and q["completion"] is None: candidates.append((key, q))
                 elif op in (5, 6) and key[2] == "write" and q["dbid"] is None: candidates.append((key, q))
