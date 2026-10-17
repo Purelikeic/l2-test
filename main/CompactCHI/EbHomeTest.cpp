@@ -272,7 +272,7 @@ int main() {
         ctx.cfg.mmioStart = 0x4000; ctx.cfg.mmioEnd = 0x5000;
         home.setDeviceOracle([&](uint64_t) { return std::make_pair(initial, uint64_t(0xff)); });
         compactchi::EbRequest deviceWrite{1,8,2048,0x1c,0x4000,true};
-        deviceWrite.size = 3; deviceWrite.allowRetry = false; deviceWrite.expCompAck = false;
+        deviceWrite.size = 3; deviceWrite.allowRetry = true; deviceWrite.expCompAck = false;
         home.accept(deviceWrite); // Default HomePlan tag is false; device must echo request tag.
         require(home.response().traceTag, "MMIO DBIDResp lost original request TraceTag");
         const auto deviceDbid = home.response().dbid;
@@ -288,6 +288,39 @@ int main() {
         require(!home.datum().traceTag, "MMIO read data lost original request TraceTag");
         home.dataAccepted();
         require(home.idle(), "MMIO read context did not retire");
+        for (const bool early : {false, true}) for (const bool write : {false, true}) {
+            auto mmio = deviceWrite;
+            mmio.traceTag = false;
+            mmio.opcode = write ? 0x1c : 4;
+            compactchi::HomePlan retryMmio;
+            retryMmio.retryOnce = true;
+            retryMmio.creditBeforeRetry = early;
+            home.accept(mmio, retryMmio);
+            require(home.responseValid() && home.response().opcode == (early ? 7U : 3U),
+                    "MMIO first retry/credit response has incorrect order");
+            home.responseAccepted();
+            require(home.responseValid() && home.response().opcode == (early ? 3U : 7U),
+                    "MMIO second retry/credit response has incorrect order");
+            home.responseAccepted();
+            require(!home.dataValid(), "MMIO data was sent before the credited reissue");
+            mmio.allowRetry = false;
+            mmio.pCrdType = retryMmio.creditType;
+            home.accept(mmio);
+            if (write) {
+                require(home.response().opcode == 5, "MMIO credited write lacks completion DBID");
+                const auto dbid = home.response().dbid;
+                home.responseAccepted();
+                auto bytes = copy(dbid, 0, 0, false, initial);
+                bytes.opcode = 3;
+                bytes.byteEnable = 0xff;
+                home.receiveDeviceData(bytes);
+            } else {
+                require(home.dataValid() && home.datum().opcode == 4,
+                        "MMIO credited read lacks CompData");
+                home.dataAccepted();
+            }
+            require(home.idle(), "MMIO Retry/P-Credit context failed to drain");
+        }
         std::printf("E.b Home: completion/copyback, issuer/type Retry/P-Credit and %u mutations passed\n",
                     rejected);
         return 0;

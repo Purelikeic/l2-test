@@ -41,7 +41,7 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
     if (device) {
         const auto& cfg = local.config();
         require(cfg.mmioEnable && req.address >= cfg.mmioStart && req.address < cfg.mmioEnd &&
-            (uint64_t(1) << req.size) <= cfg.mmioEnd - req.address && !req.allowRetry, "device outside configured no-retry region");
+            (uint64_t(1) << req.size) <= cfg.mmioEnd - req.address, "device outside configured MMIO region");
     } else {
         require((req.memAttr & 4) && req.order == 0 && !req.ns, "unsupported cacheable attributes");
         require(memory.backend().accessible(req.address) && memory.backend().accessible(req.address + 63), "Home line outside memory");
@@ -70,7 +70,7 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
         start(previous->second);
         return;
     }
-    require((device ? !req.allowRetry : req.allowRetry) && req.pCrdType == 0, "initial retry/credit contract invalid");
+    require(req.allowRetry && req.pCrdType == 0, "initial retry/credit contract invalid");
     if (!write) require(req.expCompAck == (!device && (!control || req.opcode == 0x0c)), "CompAck contract invalid");
     if (req.opcode == 0x42) require(req.expCompAck, "WriteEvictOrEvict did not request CompAck");
     if (write && req.opcode != 0x42) require(!req.expCompAck, "ordinary copyback/Evict must not request CompAck");
@@ -112,7 +112,7 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
     contexts.emplace(owner, ctx);
     transactions.emplace(key, owner);
     dbids.emplace(dbid, owner);
-    if (plan.retryOnce && !device) {
+    if (plan.retryOnce) {
         contexts.at(owner).retryPending = true;
         const unsigned issuer = plan.retryIssuer ? plan.retryIssuer : node;
         const QueuedRsp retry{{issuer, req.source, req.txn, 3, 0, 0, false, plan.creditType}, owner, RspKind::Retry};
