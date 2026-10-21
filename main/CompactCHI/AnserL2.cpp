@@ -140,7 +140,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
                 throw std::runtime_error("dirty lower Snoop responsibility mismatch");
             home->commitSnoopData(address, result.latest); lowerPhase = 2;
         }
-        if (lowerPhase != 2 || (scenario == TestScenario::Stress ?
+        if (lowerPhase != 2 || (sustained() ?
                 !home->snoopCommitComplete(address) : !home->idle())) return false;
         for (unsigned i = 0; i < 64; ++i)
             if (memory->backend().access(address + i) != lowerDirtyLine[i]) throw std::runtime_error("dirty Snoop memory mismatch");
@@ -163,7 +163,7 @@ class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public Tes
             throw std::invalid_argument("action/prefetch line outside configured memory");
         if (!initializedLines.insert(address).second) return;
         auto bytes = compactchi::VictimProfile::initial(address, cfg->seed);
-        if (scenario == TestScenario::Stress) {
+        if (sustained()) {
             // All PA bits affect each byte; same-set/high-tag aliases must not
             // accidentally return indistinguishable initial data in pressure tests.
             for (unsigned i=0;i<64;++i) {
@@ -300,6 +300,14 @@ public:
     const TLLocalConfig& config() const noexcept override { return *cfg; }
     TLLocalConfig& config() noexcept override { return *cfg; }
     bool passed() const { return successful; }
+    // Throughput reuses the stress workers, but not their stall windows or RetryAck.
+    bool sustained() const {
+        return scenario == TestScenario::Stress || scenario == TestScenario::Throughput;
+    }
+    bool fairAccept() const {
+        return scenario == TestScenario::ActionReplay || scenario == TestScenario::Replay ||
+            scenario == TestScenario::Throughput;
+    }
     void initialize(TLLocalConfig& config, uint64_t& cycles, GlobalBoard<paddr_t>& global,
                     UncachedBoard<paddr_t>& uncached, axi_agent::MemoryAgent& backend,
                     axi_agent::Bundle<BEATSIZE_MEMORY>& memoryPort) override {
@@ -311,8 +319,8 @@ public:
         const auto layout = TestNodeLayout(config);
         board = std::make_unique<compactchi::ArchitecturalBoard>(*this, layout.size(), global, uncached);
         requester = std::make_unique<compactchi::Requester>(*board, 1,
-            scenario == TestScenario::Stress ? 256 : 16,
-            scenario == TestScenario::Stress ? config.stress.outstanding : 1);
+            sustained() ? 256 : 16,
+            sustained() ? config.stress.outstanding : 1);
         requester->configureNodes(layout);
         memory = std::make_unique<chi_agent::HomeMemory>(config, cycles, backend, memoryPort);
         home = std::make_unique<compactchi::EbHome>(*memory, *this, global);
@@ -475,12 +483,11 @@ public:
             plan.completionAfterData = plan.separated;
             plan.upperBeatFirst = plan.separated;
             plan.completionSource = 14;
-            // Action replay is the latency comparison. CoupledL2's measurement
-            // home always accepts; injecting RetryAck there adds a protocol
-            // round trip that the other side does not pay. Other profiles keep
-            // the rotating Retry/P-Credit coverage.
-            const bool latencyHome = scenario == TestScenario::ActionReplay || scenario == TestScenario::Replay;
-            plan.retryOnce = !latencyHome && downRequests % 3 == 0;
+            // Action replay and throughput are the fair measurements.
+            // CoupledL2's measurement home always accepts; injecting RetryAck
+            // there adds a protocol round trip that the other side does not pay.
+            // Other profiles keep the rotating Retry/P-Credit coverage.
+            plan.retryOnce = !fairAccept() && downRequests % 3 == 0;
             plan.creditBeforeRetry = plan.retryOnce;
             plan.responseTraceTag = downRequests % 2 == 0;
             // The Home context applies retryOnce only to a first request.
@@ -604,7 +611,7 @@ public:
         // Latency replay matches the CoupledL2 measurement home: every
         // completed flit is accepted. Random ready is backpressure coverage
         // for the other profiles, not a model of the core or the memory.
-        const bool acceptAlways = scenario == TestScenario::ActionReplay || scenario == TestScenario::Replay;
+        const bool acceptAlways = fairAccept();
         dut.io_upDat_ready = acceptAlways || random() % 4 != 0;
         dut.io_upRsp_ready = acceptAlways || random() % 4 != 0;
         dut.io_upSnp_ready = requester->snoopReady();
@@ -650,6 +657,7 @@ int main(int argc, char** argv) {
         else if (profile == "random-actions") scenario = TestScenario::RandomActions;
         else if (profile == "action-replay") scenario = TestScenario::ActionReplay;
         else if (profile == "stress") scenario = TestScenario::Stress;
+        else if (profile == "throughput") scenario = TestScenario::Throughput;
         else throw std::invalid_argument("unknown action fuzzer mode");
         const auto output = std::filesystem::path(argc > 2 ? argv[2] : "build/compactchi-native") / std::to_string(seed);
         std::filesystem::create_directories(output);

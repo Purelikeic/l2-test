@@ -62,7 +62,8 @@ NodeFuzzer::NodeFuzzer(const TLLocalConfig& cfg, const std::vector<TestNode*>& n
             cfg.cmoStart > cfg.memoryStart || cfg.cmoEnd < cfg.memoryStart + span)
             throw std::invalid_argument("random-actions requires bounded episodes/lines and enabled aligned memory/CMO/MMIO regions");
     }
-    if (scenario == TestScenario::Stress) stress = std::make_unique<StressScheduler>(cfg, nodes, hooks);
+    if (scenario == TestScenario::Stress || scenario == TestScenario::Throughput)
+        stress = std::make_unique<StressScheduler>(cfg, nodes, hooks);
     if ((scenario == TestScenario::Replay || scenario == TestScenario::ActionReplay) && this->replay.empty())
         throw std::invalid_argument("empty action replay");
 }
@@ -234,7 +235,7 @@ void NodeFuzzer::configured() {
     }
 }
 bool NodeFuzzer::done() const {
-    if (scenario == TestScenario::Stress) return stress->done(*cycles);
+    if (scenario == TestScenario::Stress || scenario == TestScenario::Throughput) return stress->done(*cycles);
     if (scenario == TestScenario::RandomActions) return randomEpisode == cfg.randomActionEpisodes;
     if (scenario == TestScenario::Configured) {
         if (cfg.unifiedSequenceEnable) return cfg.unifiedSequenceMode == TLUnifiedSequenceMode::PASSIVE || anvilEpoch >= cfg.unifiedSequenceModeAnvil.epoch;
@@ -254,7 +255,7 @@ bool NodeFuzzer::done() const {
 }
 void NodeFuzzer::tick() {
     if (startupInterval < cfg.startupCycle) { ++startupInterval; return; }
-    if (scenario == TestScenario::Stress) {
+    if (scenario == TestScenario::Stress || scenario == TestScenario::Throughput) {
         stress->tick(*cycles, [this](const PlannedTestAction& a) {
             const auto result = submit(a);
             if (result == TestActionResult::Accepted) ++issued;
