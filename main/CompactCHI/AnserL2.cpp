@@ -601,9 +601,15 @@ public:
                 dut.io_downDat_bits_data[w] = value;
             }
         }
-        dut.io_upDat_ready = random() % 4 != 0; dut.io_upRsp_ready = random() % 4 != 0;
-        dut.io_upSnp_ready = requester->snoopReady(); dut.io_downTxRsp_ready = random() % 4 != 0;
-        dut.io_downTxDat_ready = random() % 4 != 0;
+        // Latency replay matches the CoupledL2 measurement home: every
+        // completed flit is accepted. Random ready is backpressure coverage
+        // for the other profiles, not a model of the core or the memory.
+        const bool acceptAlways = scenario == TestScenario::ActionReplay || scenario == TestScenario::Replay;
+        dut.io_upDat_ready = acceptAlways || random() % 4 != 0;
+        dut.io_upRsp_ready = acceptAlways || random() % 4 != 0;
+        dut.io_upSnp_ready = requester->snoopReady();
+        dut.io_downTxRsp_ready = acceptAlways || random() % 4 != 0;
+        dut.io_downTxDat_ready = acceptAlways || random() % 4 != 0;
         if (scenario == TestScenario::Stress) {
             // Fixed finite stall windows guarantee exercise of held flits;
             // each channel resumes independently so progress is always possible.
