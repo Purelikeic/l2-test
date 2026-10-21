@@ -475,7 +475,12 @@ public:
             plan.completionAfterData = plan.separated;
             plan.upperBeatFirst = plan.separated;
             plan.completionSource = 14;
-            plan.retryOnce = downRequests % 3 == 0;
+            // Action replay is the latency comparison. CoupledL2's measurement
+            // home always accepts; injecting RetryAck there adds a protocol
+            // round trip that the other side does not pay. Other profiles keep
+            // the rotating Retry/P-Credit coverage.
+            const bool latencyHome = scenario == TestScenario::ActionReplay || scenario == TestScenario::Replay;
+            plan.retryOnce = !latencyHome && downRequests % 3 == 0;
             plan.creditBeforeRetry = plan.retryOnce;
             plan.responseTraceTag = downRequests % 2 == 0;
             // The Home context applies retryOnce only to a first request.
