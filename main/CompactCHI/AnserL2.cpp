@@ -583,6 +583,7 @@ public:
             dut.io_downRsp_bits_resp = f.resp; dut.io_downRsp_bits_respErr = 0; dut.io_downRsp_bits_pCrdType = f.pCrdType;
             dut.io_downRsp_bits_cBusy = 0; dut.io_downRsp_bits_traceTag = f.traceTag;
         }
+        home->releaseReadBeats();
         dut.io_downDat_valid = home->dataValid();
         if (home->dataValid()) {
             const auto& f = home->datum();

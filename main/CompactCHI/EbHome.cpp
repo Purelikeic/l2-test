@@ -140,6 +140,11 @@ void EbHome::start(unsigned owner) {
     } else if (!ctx.write) {
         memory.submit({owner, req.address, false});
         ctx.memoryPending = true;
+        ctx.readArmed = true;
+        ctx.readAccepted = local.cycle();
+        ctx.armedBeats = 0;
+        for (unsigned i = 0; i < ctx.readData.size(); ++i)
+            ctx.readData[i] = memory.backend().access(req.address + i);
         if (plan.separated && !plan.completionAfterData) enqueueCompletion(owner);
     } else {
         const unsigned opcode = ctx.copyback ? 5 : 4; // CompDBIDResp versus Comp
@@ -171,7 +176,39 @@ void EbHome::finish(unsigned owner) {
     }
     contexts.erase(owner);
 }
+void EbHome::releaseReadBeats() {
+    const auto& cfg = memory.backend().config();
+    const uint64_t latency = uint64_t(cfg.memoryReadLatency) * cfg.memoryCycleUnit;
+    const uint64_t now = local.cycle();
+    unsigned chosen = 0;
+    uint64_t chosenDue = 0;
+    bool found = false;
+    for (const auto& [owner, ctx] : contexts) {
+        if (!ctx.readArmed || ctx.retryPending || ctx.armedBeats >= 2) continue;
+        const uint64_t due = ctx.readAccepted + latency + ctx.armedBeats;
+        if (now < due) continue;
+        const bool better = !found || (ctx.armedBeats > contexts.at(chosen).armedBeats) ||
+            (ctx.armedBeats == contexts.at(chosen).armedBeats &&
+                (due < chosenDue || (due == chosenDue && owner < chosen)));
+        if (better) {
+            found = true;
+            chosen = owner;
+            chosenDue = due;
+        }
+    }
+    if (!found) return;
+    auto& ctx = contexts.at(chosen);
+    const unsigned first = ctx.plan.upperBeatFirst ? 1U : 0U;
+    const unsigned beat = ctx.armedBeats ? 1U - first : first;
+    EbData flit{node, ctx.request.source, ctx.request.txn,
+        ctx.plan.separated ? 0xbU : 4U, ctx.dbid, node, beat * 2,
+        ctx.request.opcode == 7 ? 2U : 1U, ctx.plan.responseTraceTag};
+    std::copy_n(ctx.readData.begin() + beat * 32, 32, flit.data.begin());
+    data.push_back({flit, chosen});
+    ctx.armedBeats++;
+}
 void EbHome::service() {
+    releaseReadBeats();
     // Incoming copyback data has reserved storage even when the original
     // memory backend is busy. Submit complete lines when its capacity permits.
     for (auto& [owner, ctx] : contexts) {
@@ -183,7 +220,11 @@ void EbHome::service() {
     while (memory.completionValid()) {
         const auto result = memory.completion();
         auto it = contexts.find(result.id);
-        require(it != contexts.end(), "memory completion has no E.b Home owner");
+        if (it == contexts.end()) {
+            require(memoryOnly.erase(result.id) == 1, "memory completion has no E.b Home owner");
+            memory.popCompletion();
+            continue;
+        }
         auto& ctx = it->second;
         require(result.address == ctx.request.address && ctx.memoryPending,
                 "memory completion changed the Home line/owner");
@@ -193,18 +234,12 @@ void EbHome::service() {
             memory.popCompletion();
             finish(result.id);
         } else {
+            // Beats are released from the CHI accept cycle. The AXI completion
+            // still arrives only after r.last and only retires the backend slot.
             require(!ctx.write, "read memory completion targets a write context");
-            const unsigned first = ctx.plan.upperBeatFirst ? 1 : 0;
-            for (unsigned i = 0; i < 2; ++i) {
-                const unsigned beat = i ? 1 - first : first;
-                EbData flit{node, ctx.request.source, ctx.request.txn,
-                    ctx.plan.separated ? 0xbU : 4U, ctx.dbid, node, beat * 2,
-                    ctx.request.opcode == 7 ? 2U : 1U, ctx.plan.responseTraceTag};
-                std::copy_n(result.data.begin() + beat * 32, 32, flit.data.begin());
-                data.push_back({flit, result.id});
-            }
             ctx.memoryPending = false;
             memory.popCompletion();
+            if (!ctx.needAck) finish(result.id);
         }
     }
 }
@@ -248,7 +283,7 @@ void EbHome::dataAccepted() {
 void EbHome::receiveCompAck(unsigned source, unsigned target, unsigned dbid, bool traceTag) {
     require(dbids.count(dbid), "unknown E.b CompAck DBID");
     const unsigned owner = dbids.at(dbid);
-    const auto& ctx = contexts.at(owner);
+    auto& ctx = contexts.at(owner);
     require(!ctx.retryPending && ctx.needAck && source == ctx.request.source && target == ctx.ackTarget,
             "unexpected or misrouted E.b CompAck");
     if (ctx.control) {
@@ -259,6 +294,11 @@ void EbHome::receiveCompAck(unsigned source, unsigned target, unsigned dbid, boo
         const bool expectedTag = ctx.plan.separated ? ctx.plan.responseTraceTag :
             ctx.request.traceTag || ctx.plan.responseTraceTag;
         require(traceTag == expectedTag, "read CompAck TraceTag differs from the CPL2 completion context");
+        if (ctx.memoryPending) {
+            memoryOnly.emplace(owner, owner);
+            finish(owner);
+            return;
+        }
     } else {
         require(ctx.rspAccepted, "write CompAck preceded Comp");
         require(!ctx.acquisitionOwner || !contexts.count(ctx.acquisitionOwner),
@@ -309,6 +349,6 @@ void EbHome::commitSnoopData(uint64_t address, const chi_agent::Line& data) {
 }
 bool EbHome::idle() const {
     return contexts.empty() && transactions.empty() && dbids.empty() && credits.empty() &&
-           responses.empty() && data.empty() && memory.idle();
+           memoryOnly.empty() && responses.empty() && data.empty() && memory.idle();
 }
 } // namespace compactchi

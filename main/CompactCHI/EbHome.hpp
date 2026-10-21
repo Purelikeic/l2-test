@@ -60,6 +60,12 @@ class EbHome {
         bool write, copyback, needAck, rspAccepted = false, memoryPending = false;
         unsigned sentMask = 0, receivedMask = 0;
         bool retryPending = false, retryDelivered = false, homeMemoryOnly = false;
+        // Cacheable read beats are released from the CHI accept cycle, not from
+        // AXI r.last. The second beat is one cycle after the first.
+        bool readArmed = false;
+        unsigned armedBeats = 0;
+        uint64_t readAccepted = 0;
+        chi_agent::Line readData{};
         bool control = false, device = false;
         unsigned dataMask = 3;
         unsigned acquisitionOwner = 0;
@@ -80,6 +86,7 @@ class EbHome {
     // their different DBID obligations are live. Do not collapse these roles.
     std::map<std::tuple<unsigned, unsigned, bool>, unsigned> transactions;
     std::map<unsigned, unsigned> dbids;
+    std::map<unsigned, unsigned> memoryOnly;
     std::map<std::pair<unsigned, unsigned>, unsigned> credits;
     std::deque<QueuedRsp> responses;
     std::deque<QueuedDat> data;
@@ -103,6 +110,9 @@ public:
     void accept(const EbRequest& request, const HomePlan& plan = {});
     // Call after capturing memory handshakes, before memory next-cycle outputs.
     void service();
+    // Present a due read beat before the DUT samples CHI inputs. Latency is
+    // counted from accept(), so this must run in the same cycle as the deadline.
+    void releaseReadBeats();
     bool responseValid() const { return !responses.empty(); }
     const EbResponse& response() const { return responses.front().flit; }
     void responseAccepted();

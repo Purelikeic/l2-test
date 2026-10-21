@@ -63,6 +63,8 @@ int main() {
         auto waitData = [&] {
             for (unsigned i = 0; i < 80 && !home.dataValid(); ++i) tick();
             require(home.dataValid(), "Home read response did not progress");
+            // The second beat is due one cycle after the first.
+            tick();
         };
         auto drainMemory = [&] {
             for (unsigned i = 0; i < 80 && !home.idle(); ++i) tick();
@@ -93,6 +95,7 @@ int main() {
         reject([&] { home.receiveCompAck(1, 8, held.dbid, false); });
         reject([&] { home.receiveCompAck(1, 14, held.dbid, true); });
         home.receiveCompAck(1, 14, held.dbid, false);
+        drainMemory();
         require(home.idle(), "separated read resources did not retire");
 
         compactchi::HomePlan eviction;
@@ -110,6 +113,7 @@ int main() {
         reject([&] { home.receiveCompAck(1, 8, readDbid, false); });
         home.receiveCompAck(1, 8, readDbid, true);
         home.receiveCompAck(1, 8, release.dbid, true);
+        drainMemory();
         require(home.idle(), "same-TxnID victim/read resources did not retire independently");
 
         compactchi::HomePlan clean;
@@ -186,6 +190,7 @@ int main() {
         home.dataAccepted();
         home.dataAccepted();
         home.receiveCompAck(1, 8, retryDbid, true);
+        drainMemory();
         require(home.idle(), "retry credit or transaction obligation leaked");
 
         compactchi::HomePlan issuerA;
@@ -214,6 +219,7 @@ int main() {
             home.dataAccepted();
             home.receiveCompAck(1, 8, dbid, false);
         }
+        drainMemory();
         require(home.idle(), "two-issuer retry resources did not drain");
 
         // Same issuer/type credits are fungible. B uses A's earlier credit,
@@ -244,6 +250,7 @@ int main() {
         home.dataAccepted();
         home.dataAccepted();
         home.receiveCompAck(1, 8, finalDbid, false);
+        drainMemory();
         require(home.idle(), "fungible/outliving credit obligations leaked");
         expected(ctx, board, 0x1040, dirty);
         auto wrongSnoop = dirty;
@@ -267,6 +274,7 @@ int main() {
         require(oldReadDbid != newReadDbid,"reused request inherited a live completion DBID");
         home.dataAccepted(); home.dataAccepted();
         home.receiveCompAck(1,8,newReadDbid,false);
+        drainMemory();
         require(home.idle(),"request generations leaked DBID obligations");
         ctx.cfg.mmioEnable = true;
         ctx.cfg.mmioStart = 0x4000; ctx.cfg.mmioEnd = 0x5000;
