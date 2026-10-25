@@ -24,6 +24,17 @@
 #include <cstdio>
 
 namespace {
+uint32_t oddParity(const std::array<uint8_t, 32>& data) {
+    uint32_t check = 0;
+    for (unsigned byte = 0; byte < data.size(); ++byte) {
+        unsigned bits = data[byte];
+        unsigned parity = 0;
+        for (unsigned bit = 0; bit < 8; ++bit) parity ^= (bits >> bit) & 1U;
+        check |= ((parity ^ 1U) << byte);
+    }
+    return check;
+}
+
 class DutAdapter : public TestProtocolAdapter, public TLLocalContext, public TestScenarioHooks {
     VL2Cache& dut;
     VerilatedContext& simulation;
@@ -602,6 +613,8 @@ public:
             dut.io_downDat_bits_srcID = f.source; dut.io_downDat_bits_tgtID = f.target; dut.io_downDat_bits_txnID = f.txn;
             dut.io_downDat_bits_opcode = f.opcode; dut.io_downDat_bits_dbID = f.dbid; dut.io_downDat_bits_homeNID = f.home;
             dut.io_downDat_bits_dataID = f.dataId; dut.io_downDat_bits_resp = f.resp; dut.io_downDat_bits_respErr = 0; dut.io_downDat_bits_traceTag = f.traceTag;
+            dut.io_downDat_bits_dataCheck = oddParity(f.data);
+            dut.io_downDat_bits_poison = 0;
             for (unsigned w = 0; w < 8; ++w) {
                 uint32_t value = 0;
                 for (unsigned b = 0; b < 4; ++b) value |= uint32_t(f.data[w * 4 + b]) << (b * 8);
