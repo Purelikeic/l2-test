@@ -159,6 +159,33 @@ for bad in (
     except AssertionError: rejected += 1
     else: raise AssertionError("MMIO reissue escaped credit or original-identity checks")
 
+# Ordered MMIO (Order=2): ReadReceipt, the global ReadNoSnp block and DBIDRespOrd + Comp.
+ordered = sample(1,"chi_tx_req",1,8,2048,4,address=0x40000,allow_retry=True,
+                 exp_comp_ack=False,size=3,mem_attr=2,order=2,ns=False,likely_shared=False)
+for receipt_cycle, data_cycle in ((2, 3), (3, 2)):
+    data = sample(data_cycle,"chi_rx_dat",8,1,2048,4,dbid=0,home_node=8,data_id=0,data="00"*32)
+    receipt = sample(receipt_cycle,"chi_rx_rsp",8,1,2048,8)
+    later = dict(ordered, cycle=4, sim_time=8, txn_id=2049, order=0)
+    checker["check"](sorted([ordered,data,receipt,later,dict(data,cycle=5,sim_time=10,txn_id=2049)],key=lambda r:r["cycle"]))
+    accepted_variants.append(dict(case="mmio-ordered-read",variant=f"receipt-{receipt_cycle}-data-{data_cycle}"))
+    early = dict(later, cycle=min(receipt_cycle, data_cycle), sim_time=2*min(receipt_cycle, data_cycle))
+    rows = sorted([ordered,data,receipt,early,dict(data,cycle=5,sim_time=10,txn_id=2049)],key=lambda r:r["cycle"])
+    try: checker["check"](rows)
+    except AssertionError: rejected += 1
+    else: raise AssertionError("ReadNoSnp issued before the ordered read's ReadReceipt")
+try: checker["check"]([ordered,sample(2,"chi_rx_dat",8,1,2048,4,dbid=0,home_node=8,data_id=0,data="00"*32)])
+except AssertionError: rejected += 1
+else: raise AssertionError("ordered read completed without ReadReceipt")
+owrite = dict(ordered, opcode=28)
+odbid = sample(2,"chi_rx_rsp",8,1,2048,14,dbid=304)
+ocomp = sample(3,"chi_rx_rsp",8,1,2048,4,dbid=304)
+odat = sample(4,"chi_tx_dat",1,8,304,3,data_id=0,data="a5"*32,byte_enable=0xff)
+checker["check"]([owrite,odbid,ocomp,odat])
+accepted_variants.append(dict(case="mmio-ordered-write",variant="dbidrespord-comp"))
+try: checker["check"]([dict(owrite,order=0),odbid,ocomp,odat])
+except AssertionError: rejected += 1
+else: raise AssertionError("DBIDRespOrd accepted for an unordered write")
+
 state = dict(state="passed", endpointCases=len(results), traceVariants=len(accepted_variants),
              mutationRejections=rejected, results=results, acceptedVariants=accepted_variants,
              observedSources=[dict(direction=d,opcode=o) for d,o in sorted(sources)],

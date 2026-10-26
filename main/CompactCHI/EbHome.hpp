@@ -51,7 +51,10 @@ struct HomePlan {
  * CompData, RespSepData and WriteEvictOrEvict handling. GlobalBoard supplies
  * independent copyback expectations; outgoing read data comes from real memory.
  * Cacheable Retry/P-Credit is modeled by issuer/type rather than TxnID.
- * Lower Snoop/DCT, CMO and MMIO are not implemented by this profile yet. */
+ * Lower Snoop/DCT and CMO are not implemented by this profile yet.
+ * Device (MMIO) Order=1/2: ReadNoSnp returns ReadReceipt, WriteNoSnp returns
+ * DBIDRespOrd + Comp; the Home rejects a ReadNoSnp issued while an ordered read
+ * still awaits its ReadReceipt (the AnserL2/CoupledL2 MMIOBridge contract). */
 class EbHome {
     struct Context {
         EbRequest request;
@@ -67,12 +70,15 @@ class EbHome {
         uint64_t readAccepted = 0;
         chi_agent::Line readData{};
         bool control = false, device = false;
+        // Order!=0 device request: read returns ReadReceipt, write returns
+        // DBIDRespOrd followed by a separate Comp (CHI E.b B2.6).
+        bool ordered = false, receiptAccepted = false, compQueued = false, compAccepted = false;
         unsigned dataMask = 3;
         unsigned acquisitionOwner = 0;
         uint64_t byteMask = ~uint64_t(0);
         chi_agent::Line expected{}, received{};
     };
-    enum class RspKind { Completion, Retry, Credit };
+    enum class RspKind { Completion, Retry, Credit, Receipt, OrderedComp };
     struct QueuedRsp { EbResponse flit; unsigned owner; RspKind kind = RspKind::Completion; };
     struct QueuedDat { EbData flit; unsigned owner; };
     chi_agent::HomeMemory& memory;
@@ -99,7 +105,11 @@ class EbHome {
     void finish(unsigned owner);
     void retireRequest(unsigned owner);
     void enqueueCompletion(unsigned owner);
+    void enqueueOrderedComp(unsigned owner);
     void start(unsigned owner);
+    // An issued ordered ReadNoSnp whose ReadReceipt the DUT has not accepted.
+    // A delivered RetryAck ends the obligation until the credited reissue.
+    bool readReceiptOutstanding(unsigned except) const;
 public:
     EbHome(chi_agent::HomeMemory& memory, TLLocalContext& local, GlobalBoard<paddr_t>& global,
            unsigned node = 8, size_t capacity = 16);

@@ -267,9 +267,10 @@ def check(root, events, seed, topo, terminal=None):
                     undefined_storage.discard(entry["address"])
                     transition("cmo-evict-discard" if entry["owner"] else "victim-evict-discard",
                                entry["address"], r, entry["request"], entry["owner"])
-            elif d == "chi_rx_rsp" and op == 5:
+            elif d == "chi_rx_rsp" and op in (5, 14):
+                # 14 = DBIDRespOrd: ordered device write; its later Comp (4) finds no entry.
                 key = r["target"], r["txn_id"]
-                assert key in writes
+                assert key in writes and (op == 5 or writes[key]["device"])
                 write_dbids[r["dbid"]] = writes.pop(key)
             elif d == "chi_tx_dat" and op in (2, 3):
                 q = write_dbids[r["txn_id"]]

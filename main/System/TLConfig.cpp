@@ -32,6 +32,7 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
     tlcfg.mmioEnable                    = TLTEST_DEFAULT_MMIO_ENABLE;
     tlcfg.mmioStart                     = TLTEST_DEFAULT_MMIO_START;
     tlcfg.mmioEnd                       = TLTEST_DEFAULT_MMIO_END;
+    tlcfg.mmioOrder                     = 0;
 
     tlcfg.cmoEnable                     = TLTEST_DEFAULT_CMO_ENABLE;
     tlcfg.cmoEnableCBOClean             = TLTEST_DEFAULT_CMO_ENABLE_CBO_CLEAN;
@@ -123,6 +124,7 @@ TLLocalConfig LoadTestConfig(std::function<void(TLLocalConfig&)> initialize, con
     INI_OVERRIDE_INT("tltest.config", "mmio.enable",                tlcfg.mmioEnable);
     INI_OVERRIDE_INT("tltest.config", "mmio.start",                 tlcfg.mmioStart);
     INI_OVERRIDE_INT("tltest.config", "mmio.end",                   tlcfg.mmioEnd);
+    INI_OVERRIDE_INT("tltest.config", "mmio.order",                 tlcfg.mmioOrder);
 
     INI_OVERRIDE_INT("tltest.config", "cmo.enable",                 tlcfg.cmoEnable);
     INI_OVERRIDE_INT("tltest.config", "cmo.enable.cbo.clean",       tlcfg.cmoEnableCBOClean);

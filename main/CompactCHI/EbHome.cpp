@@ -42,6 +42,11 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
         const auto& cfg = local.config();
         require(cfg.mmioEnable && req.address >= cfg.mmioStart && req.address < cfg.mmioEnd &&
             (uint64_t(1) << req.size) <= cfg.mmioEnd - req.address, "device outside configured MMIO region");
+        require(req.order <= 2, "reserved device Order encoding");
+        const auto prior = transactions.find(std::make_tuple(req.source, req.txn, isWrite(req.opcode)));
+        const unsigned self = prior == transactions.end() ? 0 : prior->second;
+        if (req.opcode == 4)
+            require(!readReceiptOutstanding(self), "ReadNoSnp issued while an ordered read awaits ReadReceipt");
     } else {
         require((req.memAttr & 4) && req.order == 0 && !req.ns, "unsupported cacheable attributes");
         require(memory.backend().accessible(req.address) && memory.backend().accessible(req.address + 63), "Home line outside memory");
@@ -93,6 +98,7 @@ void EbHome::accept(const EbRequest& req, const HomePlan& plan) {
                 read.request.txn == req.txn) ctx.acquisitionOwner = std::max(ctx.acquisitionOwner, id);
     }
     ctx.control = control; ctx.device = device;
+    ctx.ordered = device && req.order != 0;
     if (device) {
         ctx.dataMask = req.size == 6 ? 3 : 1U << ((req.address >> 5) & 1);
         if (write) {
@@ -127,8 +133,14 @@ void EbHome::start(unsigned owner) {
     const auto& plan = ctx.plan;
     if (ctx.device) {
         const bool responseTraceTag = req.traceTag;
-        if (ctx.write) responses.push_back({{node, req.source, req.txn, 5, ctx.dbid, 0, responseTraceTag}, owner});
-        else {
+        if (ctx.write) {
+            // Ordered: DBIDRespOrd now; Comp before or after the data per plan.
+            responses.push_back({{node, req.source, req.txn, ctx.ordered ? 0x0eU : 5U, ctx.dbid, 0, responseTraceTag}, owner});
+            if (ctx.ordered && !plan.completionAfterData) enqueueOrderedComp(owner);
+        } else {
+            // Ordered: ReadReceipt alongside the data, or only after all data is accepted.
+            if (ctx.ordered && !plan.completionAfterData)
+                responses.push_back({{node, req.source, req.txn, 0x08, 0, 0, responseTraceTag}, owner, RspKind::Receipt});
             const auto& bytes = deviceMemory[req.address & ~uint64_t(63)];
             for (unsigned beat = 0; beat < 2; ++beat) if (ctx.dataMask & (1U << beat)) {
                 EbData flit{node, req.source, req.txn, 4, ctx.dbid, node, beat * 2, 0, responseTraceTag};
@@ -155,6 +167,20 @@ void EbHome::enqueueCompletion(unsigned owner) {
     const auto& ctx = contexts.at(owner);
     responses.push_back({{ctx.ackTarget, ctx.request.source, ctx.request.txn, 0x0b,
                           ctx.dbid, ctx.request.opcode == 7 ? 2U : 1U, ctx.plan.responseTraceTag}, owner});
+}
+void EbHome::enqueueOrderedComp(unsigned owner) {
+    auto& ctx = contexts.at(owner);
+    require(ctx.ordered && ctx.write && !ctx.compQueued, "ordered write Comp queued twice");
+    ctx.compQueued = true;
+    // Comp separate from DBIDRespOrd carries the same DBID (CHI B2.7.2).
+    responses.push_back({{node, ctx.request.source, ctx.request.txn, 4, ctx.dbid, 0, ctx.request.traceTag},
+                         owner, RspKind::OrderedComp});
+}
+bool EbHome::readReceiptOutstanding(unsigned except) const {
+    for (const auto& [owner, ctx] : contexts)
+        if (owner != except && ctx.device && !ctx.write && ctx.ordered && !ctx.receiptAccepted &&
+            !(ctx.retryPending && ctx.retryDelivered)) return true;
+    return false;
 }
 void EbHome::retireRequest(unsigned owner) {
     const auto& ctx = contexts.at(owner);
@@ -260,6 +286,20 @@ void EbHome::responseAccepted() {
         responses.pop_front();
         return;
     }
+    if (item.kind == RspKind::Receipt) {
+        require(ctx.ordered && !ctx.write && !ctx.receiptAccepted, "ReadReceipt delivered twice");
+        ctx.receiptAccepted = true;
+        responses.pop_front();
+        if (ctx.sentMask == ctx.dataMask) finish(item.owner);
+        return;
+    }
+    if (item.kind == RspKind::OrderedComp) {
+        require(ctx.rspAccepted && !ctx.compAccepted, "ordered write Comp preceded DBIDRespOrd or repeated");
+        ctx.compAccepted = true;
+        responses.pop_front();
+        if (ctx.receivedMask == ctx.dataMask) finish(item.owner);
+        return;
+    }
     require(!ctx.rspAccepted, "Home completion delivered twice");
     ctx.rspAccepted = true;
     const bool retire = (ctx.write || ctx.control) && !ctx.copyback && !ctx.needAck && !ctx.device;
@@ -274,8 +314,11 @@ void EbHome::dataAccepted() {
     const unsigned beat = item.flit.dataId / 2;
     require(!(ctx.sentMask & (1U << beat)), "Home read data delivered twice");
     ctx.sentMask |= 1U << beat;
-    if (ctx.sentMask == 3 && ctx.plan.separated && ctx.plan.completionAfterData) enqueueCompletion(item.owner);
-    const bool deviceDone = ctx.device && ctx.sentMask == ctx.dataMask;
+    if (ctx.sentMask == 3 && ctx.plan.separated && ctx.plan.completionAfterData && !ctx.device) enqueueCompletion(item.owner);
+    if (ctx.device && ctx.ordered && ctx.sentMask == ctx.dataMask && ctx.plan.completionAfterData)
+        responses.push_back({{node, ctx.request.source, ctx.request.txn, 0x08, 0, 0, ctx.request.traceTag},
+                             item.owner, RspKind::Receipt});
+    const bool deviceDone = ctx.device && ctx.sentMask == ctx.dataMask && (!ctx.ordered || ctx.receiptAccepted);
     data.pop_front();
     retireRequest(item.owner);
     if (deviceDone) finish(item.owner);

@@ -18,6 +18,9 @@ void EbHome::receiveDeviceData(const EbData& flit) {
         actual[beat * 32 + i] = flit.data[i];
     }
     ctx.receivedMask |= 1U << beat;
-    if (ctx.receivedMask == ctx.dataMask) finish(owner);
+    if (ctx.receivedMask != ctx.dataMask) return;
+    if (!ctx.ordered) { finish(owner); return; }
+    if (!ctx.compQueued) enqueueOrderedComp(owner); // Comp after data
+    else if (ctx.compAccepted) finish(owner);
 }
 } // namespace compactchi

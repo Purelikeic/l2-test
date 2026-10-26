@@ -80,6 +80,7 @@ public:
     uint64_t            mmioEnable;                             // MMIO region enable
     uint64_t            mmioStart;                              // MMIO region start address
     uint64_t            mmioEnd;                                // MMIO region end address
+    uint64_t            mmioOrder;                              // MMIO request Order (0 none, 1 request, 2 endpoint)
 
     uint64_t            cmoEnable;                              // CMO region enable
     uint64_t            cmoEnableCBOClean;                      // CMO enable 'cbo.clean'

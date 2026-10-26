@@ -48,9 +48,13 @@ def check(events):
                               form=form, retried=q["retry"] is not None))
         if active.get(key) is q: del active[key]
 
+    def receipt_done(q):
+        # Order!=0 ReadNoSnp also needs its ReadReceipt (CHI B2.6).
+        return not (q["request"]["opcode"] == 4 and q["request"]["order"]) or q["receipt"] is not None
+
     def request_complete(q):
         if q["request"]["opcode"] in READ:
-            return q["beats"] == need_beats(q) and (q["mode"] == "combined" or q["completion"] is not None)
+            return q["beats"] == need_beats(q) and (q["mode"] == "combined" or q["completion"] is not None) and receipt_done(q)
         return q["completion"] is not None or q["dbid"] is not None
 
     def need_beats(q):
@@ -95,6 +99,13 @@ def check(events):
             if op not in DEVICE:
                 assert r["size"] == 6 and r["address"] % 64 == 0 and r["mem_attr"] & 4 and r["order"] == 0 and not r["ns"]
             key = r["node"], r["txn_id"], family
+            if op == 4:
+                # AnserL2/CoupledL2 MMIOBridge: no ReadNoSnp while an issued ordered read lacks
+                # its ReadReceipt; an accepted RetryAck suspends that until the reissue.
+                for k, q in active.items():
+                    waiting = q["request"]["opcode"] == 4 and q["request"]["order"] and q["receipt"] is None
+                    if k != key and waiting and not (q["retry"] is not None and not q["reissued"]):
+                        raise AssertionError("ReadNoSnp issued while an ordered read awaits ReadReceipt")
             if key in active and not r["allow_retry"]:
                 q = active[key]
                 retry = q["retry"]
@@ -116,32 +127,41 @@ def check(events):
                 assert r["p_crd_type"] == 0 and r["allow_retry"], "invalid initial retry contract"
                 acquisition = active.get((r["node"], r["txn_id"], "read")) if family == "write" else None
                 active[key] = dict(request=r, retry=None, reissued=False, completion=None, dbid=None,
-                                   mode=None, beats=set(), data=None, data_tag=False, ack=r["exp_comp_ack"], acquisition=acquisition)
+                                   mode=None, beats=set(), data=None, data_tag=False, ack=r["exp_comp_ack"], acquisition=acquisition,
+                                   receipt=None)
         elif direction == "chi_rx_rsp":
             assert r["resp_err"] == 0 and 0 <= r["p_crd_type"] < 16
             if op == 7:
                 assert r["target"] == 1
                 credits[r["target"], r["node"], r["p_crd_type"]].append(r)
                 continue # PCrdGrant.TxnID is intentionally not a matching key.
-            assert op in (3, 4, 5, 6, 11), "unsupported downstream response"
+            assert op in (3, 4, 5, 6, 8, 11, 14), "unsupported downstream response"
             candidates = []
             for key, q in active.items():
                 if key[:2] != (r["target"], r["txn_id"]): continue
-                if op == 3 and q["retry"] is None and q["completion"] is None and not q["beats"] and q["dbid"] is None:
+                if op == 3 and q["retry"] is None and q["completion"] is None and not q["beats"] and q["dbid"] is None \
+                        and q["receipt"] is None:
                     candidates.append((key, q))
+                elif op == 8 and key[2] == "read" and q["request"]["opcode"] == 4 and q["request"]["order"] \
+                        and q["receipt"] is None: candidates.append((key, q))
                 elif op == 11 and key[2] == "read" and q["completion"] is None: candidates.append((key, q))
-                elif op in (5, 6) and key[2] == "write" and q["dbid"] is None: candidates.append((key, q))
+                elif op in (5, 6, 14) and key[2] == "write" and q["dbid"] is None: candidates.append((key, q))
                 elif op == 4 and key[2] in ("control", "write") and q["completion"] is None: candidates.append((key, q))
             assert len(candidates) == 1, "response lacks an unambiguous transaction role"
             key, q = candidates[0]
             assert q["retry"] is None or q["reissued"], "completion preceded authorized reissue"
             if op == 3:
                 q["retry"] = r
+            elif op == 8:
+                q["receipt"] = r
+                if q["mode"] == "combined" and q["beats"] == need_beats(q): finish(key, q, r["cycle"], "combined")
+                continue
             elif op == 11:
                 assert q["mode"] in (None, "separated")
                 q["mode"] = "separated"; q["completion"] = r
-            elif op in (5, 6):
+            elif op in (5, 6, 14):
                 assert q["request"]["opcode"] in (23, 27, 28, 29, 66)
+                assert op != 14 or q["request"]["order"], "DBIDRespOrd for an unordered write"
                 assert op == 5 or q["request"]["opcode"] in (28, 29), "unsupported cacheable DBID-only completion"
                 q["dbid"] = r; q["mode"] = "copyback" if op == 5 else "split-write"
                 if op == 5:
@@ -179,7 +199,8 @@ def check(events):
             q["data"] = r; q["data_tag"] |= r["trace_tag"]; q["beats"].add(r["data_id"])
             assert len(bytes.fromhex(r["data"])) == 32
             publish_ack(key, q)
-            if not q["ack"] and q["beats"] == need_beats(q) and (mode == "combined" or q["completion"] is not None):
+            if not q["ack"] and q["beats"] == need_beats(q) and (mode == "combined" or q["completion"] is not None) \
+                    and receipt_done(q):
                 finish(key, q, r["cycle"], mode)
         elif direction == "chi_tx_rsp" and op == 2:
             ack = r["node"], r["target"], r["txn_id"]

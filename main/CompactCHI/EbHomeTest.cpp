@@ -329,6 +329,74 @@ int main() {
             }
             require(home.idle(), "MMIO Retry/P-Credit context failed to drain");
         }
+        // Ordered MMIO (Order=2): ReadReceipt and DBIDRespOrd + separate Comp,
+        // with the receipt/Comp either alongside or after the data.
+        for (const bool after : {false, true}) {
+            compactchi::HomePlan plan;
+            plan.completionAfterData = after;
+            auto read = deviceWrite;
+            read.opcode = 4; read.traceTag = false; read.order = 2; read.txn = 2100;
+            home.accept(read, plan);
+            // While its ReadReceipt is outstanding no further ReadNoSnp may issue.
+            auto second = read; second.txn = 2101; second.order = 0;
+            reject([&] { home.accept(second); });
+            auto write = deviceWrite;
+            write.traceTag = false; write.order = 2; write.txn = 2102;
+            home.accept(write, plan); // Writes are not held by the ReadReceipt.
+            if (!after) {
+                require(home.response().opcode == 8 && home.response().txn == 2100, "ordered read lacks ReadReceipt");
+                home.responseAccepted();
+                require(home.dataValid(), "ordered read lacks CompData");
+                home.dataAccepted();
+                home.accept(second); // ReadReceipt accepted: the next ReadNoSnp may issue.
+                home.dataAccepted();
+            } else {
+                home.dataAccepted();
+                reject([&] { home.accept(second); }); // data alone does not end the obligation
+                require(home.response().opcode == 0x0e, "ordered write lacks DBIDRespOrd");
+            }
+            require(home.response().opcode == 0x0e && home.response().txn == 2102, "ordered write lacks DBIDRespOrd");
+            const auto dbid = home.response().dbid;
+            home.responseAccepted();
+            if (!after) {
+                require(home.response().opcode == 4 && home.response().dbid == dbid, "ordered Comp lacks DBIDRespOrd DBID");
+                home.responseAccepted();
+            } else {
+                require(home.response().opcode == 8 && home.response().txn == 2100, "late ReadReceipt missing");
+                home.responseAccepted();
+                home.accept(second);
+                home.dataAccepted();
+            }
+            auto bytes = copy(dbid, 0, 0, false, initial);
+            bytes.opcode = 3; bytes.byteEnable = 0xff;
+            home.receiveDeviceData(bytes);
+            if (after) {
+                require(home.response().opcode == 4 && home.response().dbid == dbid, "late ordered Comp missing");
+                home.responseAccepted();
+            }
+            require(home.idle(), "ordered MMIO contexts failed to drain");
+        }
+        // A delivered RetryAck ends the receipt obligation until the credited reissue.
+        {
+            compactchi::HomePlan retry;
+            retry.retryOnce = true;
+            auto read = deviceWrite;
+            read.opcode = 4; read.traceTag = false; read.order = 1; read.txn = 2200;
+            home.accept(read, retry);
+            auto other = read; other.txn = 2201; other.order = 0;
+            reject([&] { home.accept(other); }); // RetryAck not yet delivered
+            home.responseAccepted(); home.responseAccepted(); // RetryAck + PCrdGrant
+            home.accept(other);
+            home.dataAccepted();
+            read.allowRetry = false; read.pCrdType = retry.creditType;
+            home.accept(read); // credited reissue re-arms the receipt
+            auto third = other; third.txn = 2202;
+            reject([&] { home.accept(third); });
+            require(home.response().opcode == 8, "reissued ordered read lacks ReadReceipt");
+            home.responseAccepted();
+            home.dataAccepted();
+            require(home.idle(), "retried ordered MMIO read failed to drain");
+        }
         std::printf("E.b Home: completion/copyback, issuer/type Retry/P-Credit and %u mutations passed\n",
                     rejected);
         return 0;

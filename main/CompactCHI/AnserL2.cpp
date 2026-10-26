@@ -323,6 +323,7 @@ public:
                     UncachedBoard<paddr_t>& uncached, axi_agent::MemoryAgent& backend,
                     axi_agent::Bundle<BEATSIZE_MEMORY>& memoryPort) override {
         cfg = &config; this->cycles = &cycles; random.seed(config.seed);
+        if (config.mmioOrder > 2) throw std::runtime_error("mmio.order must be 0, 1 or 2");
         stimulus.open(output / "stimulus.txt"); actions.open(output / "actions.jsonl"); rejections.open(output / "rejections.jsonl");
         if (!stimulus || !actions || !rejections) throw std::runtime_error("cannot open action evidence");
         prefetchEvidence.open(output / "prefetch.jsonl");
@@ -586,7 +587,10 @@ public:
             const auto& f = requester->request();
             dut.io_req_bits_srcID = f.node; dut.io_req_bits_tgtID = f.target; dut.io_req_bits_txnID = f.txn;
             dut.io_req_bits_opcode = f.opcode; dut.io_req_bits_addr = f.address; dut.io_req_bits_size = f.size;
-            dut.io_req_bits_tagAlias = 0; dut.io_req_bits_ns = 0; dut.io_req_bits_order = 0;
+            // Only Non-cacheable ReadNoSnp/WriteNoSnp* carry Order; cacheable must be 0.
+            const bool device = f.opcode == 2 || f.opcode == 8 || f.opcode == 9;
+            dut.io_req_bits_tagAlias = 0; dut.io_req_bits_ns = 0;
+            dut.io_req_bits_order = device ? unsigned(config().mmioOrder) : 0U;
             dut.io_req_bits_memAttr = 0; dut.io_req_bits_excl = 0; dut.io_req_bits_expCompData = f.opcode == 2 || f.opcode == 3 || f.opcode == 4 || f.opcode == 16;
             dut.io_req_bits_expCompStash = 0; dut.io_req_bits_wayValid = 0; dut.io_req_bits_way = 0;
             dut.io_req_bits_traceTag = f.traceTag; dut.io_vaddr = f.address;
