@@ -282,7 +282,13 @@ def check_time():
         assert values[symbols["clock"]] == 0, (time, "observation not sampled before active edge")
         checked += 1
 
-with (root / "waveform.vcd").open() as waveform:
+waveform_path = root / "waveform.vcd"
+if not waveform_path.exists():
+    waveform_path = root / "waveform.fst"
+    if not waveform_path.exists():
+        sys.exit(f"error: neither waveform.vcd nor waveform.fst found in {root}")
+    sys.exit(f"error: waveform.fst found but checker only supports VCD; use TRACE_FORMAT=vcd")
+with waveform_path.open() as waveform:
     scope = []
     header = True
     ids = set()

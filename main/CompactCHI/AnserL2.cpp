@@ -1,6 +1,10 @@
 #include "VL2Cache.h"
 #include "verilated.h"
+#if defined(VM_TRACE_VCD)
+#include "verilated_vcd_c.h"
+#else
 #include "verilated_fst_c.h"
+#endif
 #include "../Sequencer/TLSequencer.hpp"
 #include "../System/TLConfig.hpp"
 #include "../Events/TLSystemEvent.hpp"
@@ -690,9 +694,15 @@ int main(int argc, char** argv) {
         simulation.commandArgs(argc, argv);
         simulation.traceEverOn(true);
         VL2Cache dut(&simulation);
+#if defined(VM_TRACE_VCD)
+        VerilatedVcdC waveform;
+        dut.trace(&waveform, 99);
+        waveform.open((output / "waveform.vcd").c_str());
+#else
         VerilatedFstC waveform;
         dut.trace(&waveform, 99);
         waveform.open((output / "waveform.fst").c_str());
+#endif
         auto edge = [&](bool clock) { dut.clock = clock; dut.eval(); waveform.dump(simulation.time()); simulation.timeInc(1); };
         dut.reset = 1;
         dut.io_req_valid = dut.io_evt_valid = dut.io_prefetchTask_valid = 0;

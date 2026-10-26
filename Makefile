@@ -1,5 +1,6 @@
 THREADS_BUILD 	?= 1
 LZ4_PREFIX 	?= $(shell brew --prefix lz4 2>/dev/null)
+TRACE_FORMAT 	?= fst
 
 CMAKE_CXX_COMPILER :=
 ifneq ($(origin CXX_COMPILER), undefined)
@@ -495,10 +496,13 @@ compactchi-test: compactchi-build
 
 compactchi-build:
 	@mkdir -p $(COMPACTCHI_OBJ_DIR)
-	$(VERILATOR) --cc --exe --build --assert --trace-fst -j $(THREADS_BUILD) --top-module L2Cache \
+	$(eval TRACE_FLAG := $(if $(filter vcd,$(TRACE_FORMAT)),--trace,--trace-fst))
+	$(eval TRACE_CFLAGS := $(if $(filter vcd,$(TRACE_FORMAT)),-DVM_TRACE_VCD=1,))
+	$(eval TRACE_LDFLAGS := $(if $(filter vcd,$(TRACE_FORMAT)),,))
+	$(VERILATOR) --cc --exe --build --assert $(TRACE_FLAG) -j $(THREADS_BUILD) --top-module L2Cache \
 		--Mdir $(COMPACTCHI_OBJ_DIR) -O2 -Wno-fatal \
-		-CFLAGS "-std=c++20 -I$(LZ4_PREFIX)/include" \
-		-LDFLAGS "-L$(LZ4_PREFIX)/lib" \
+		-CFLAGS "-std=c++20 -I$(LZ4_PREFIX)/include $(TRACE_CFLAGS)" \
+		-LDFLAGS "-L$(LZ4_PREFIX)/lib $(if $(filter fst,$(TRACE_FORMAT)),-llz4,)" \
 		$(DUT_SV) $(CURDIR)/main/CompactCHI/AnserL2.cpp \
 		$(CURDIR)/main/CompactCHI/Requester.cpp $(CURDIR)/main/CompactCHI/RequesterActions.cpp $(CURDIR)/main/CompactCHI/ArchitecturalBoard.cpp \
 		$(CURDIR)/main/CompactCHI/EbHome.cpp $(CURDIR)/main/CompactCHI/EbHomeDevice.cpp $(CURDIR)/main/CompactCHI/CanonicalTrace.cpp \
